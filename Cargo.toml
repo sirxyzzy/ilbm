@@ -1,0 +1,14 @@
+[package]
+name = "ilbm"
+version = "0.1.0"
+authors = ["Andy Philpotts <andy@failfree.net>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = "0.5"
+thiserror = "1.0"
+
+[dev-dependencies]
+anyhow = "1.0"
