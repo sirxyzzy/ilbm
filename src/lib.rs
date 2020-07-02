@@ -23,6 +23,9 @@ pub enum Error {
     #[error("File does not contain image header (FORM.BMHD)")]
     NoHeader,
 
+    #[error("Unexpected end of image data")]
+    NoData,
+
     #[error("{0} not supported")]
     NotSupported(String),
 }
@@ -68,6 +71,42 @@ struct BitmapHeader {
 #[derive(Debug, Clone)]
 struct ColorMap {
     colors: Vec<RgbValue>
+}
+
+struct RowIter<'a> {
+    raw_data: &'a [u8],
+    width: usize,
+    compressed: bool, 
+}
+
+impl<'a> RowIter<'a> {
+    fn new(raw_data: &[u8], width: usize, compressed: bool) -> RowIter {
+        RowIter{raw_data, width, compressed}
+    }
+}
+
+impl<'a>  Iterator for RowIter<'a>  {
+    type Item = Vec<u8>;
+    fn next(&mut self) -> std::option::Option<<Self as std::iter::Iterator>::Item> {
+        if self.compressed {
+            match unpacker(&self.raw_data, self.width) {
+                Ok((remaining, row)) => {
+                    self.raw_data = remaining;
+                    Some(row)
+                },
+                Err(_) => None
+            }
+        } else {
+            if self.raw_data.len() > self.width {
+                None
+            } else {
+                let width = self.width;
+                let row = &self.raw_data[..width];
+                self.raw_data = &self.raw_data[width..];
+                Some(row.to_vec())
+            }
+        }
+    }
 }
 
 pub fn read_from_file(file: File) -> Result<Image> {
@@ -162,12 +201,6 @@ fn read_body_no_map(chunk: IffChunk, header: BitmapHeader) -> Result<Image> {
 
 /// Read a body using a color map, pixel data is interpreted as indexes into the map  
 fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMap) -> Result<Image> {
-    let data = chunk.data();
-
-    if header.compression != 0 {
-        return Err(Error::NotSupported("compression".to_string()));
-    }
-
     // Having a CMAP implies certain limitations, here we limit color indices to a u8
     // so the number of planes cannot exceed 8 (bits) and the map must be big enough
     if header.planes > 8 {
@@ -186,21 +219,23 @@ fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMa
 
     // Bytes per row (always EVEN)
     let row_stride = ((width + 15)/16) * 2;
-    let mut here: usize = 0;
+
+    let mut rows = RowIter::new(chunk.data(), row_stride, header.compression != 0);
 
     // We assemble all the resolved RGB values in here
     let mut pixels= Vec::<RgbValue>::with_capacity(width * height);
 
     for _row in 0..height {
         let mut row= vec![0u8;width];
-
         let mut plane_bit: u8 = 1;
         for _plane in 0..header.planes {
+            let row_data = rows.next().ok_or(Error::NoData)?;
+
             // Read planes, each plane contributes 1 bit
 
             // For all bytes in the row
             for offset in 0..row_stride {
-                let mut plane_byte = data[here + offset];
+                let mut plane_byte = row_data[offset];
 
                 for b in 0..8 {
                     if plane_byte & 0x80 != 0 {
@@ -218,14 +253,13 @@ fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMa
             }
 
             plane_bit = plane_bit << 1; 
-            here += row_stride;
         }
 
         if header.masking == (Masking::HasMask as u8) {
             // Read mask plane, right now we simply ignore it
-            // but we must advance the row offset 
+            // but we must get the next row 
 
-            here += row_stride;            
+            let _row_data = rows.next().ok_or(Error::NoData)?;          
         }
 
         // Resolve through color map, and add to output vector
