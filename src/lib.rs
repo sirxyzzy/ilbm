@@ -51,10 +51,11 @@ pub struct Image {
     pub width: usize,
     pub height: usize,
 
+    /// RGB data
     /// Left to right in row, then bottom to top
     /// so indexes look like y * width + x where
     /// y=0 is the bottom  
-    pub pixels: Vec<RgbValue>
+    pub pixels: Vec<u8>
 }
 
 #[derive(Debug, Clone)]
@@ -225,7 +226,7 @@ fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMa
     let mut rows = RowIter::new(chunk.data(), row_stride, header.compression != 0);
 
     // We assemble all the resolved RGB values in here
-    let mut pixels= Vec::<RgbValue>::with_capacity(width * height);
+    let mut pixels= Vec::<u8>::with_capacity(3 * width * height);
 
     for _row in 0..height {
         let mut row= vec![0u8;width];
@@ -265,10 +266,15 @@ fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMa
         }
 
         // Resolve through color map, and add to output vector
-        pixels.extend(row.iter().map(|i| color_map.colors[*i as usize]));
+        for p in row {
+            let rgb = color_map.colors[p as usize];
+            pixels.push(rgb.0);
+            pixels.push(rgb.1);
+            pixels.push(rgb.2);
+        }
     }
 
-    assert_eq!(pixels.len(), width * height);
+    assert_eq!(pixels.len(), 3 * width * height);
 
     Ok(Image{width, height, pixels})
 }
