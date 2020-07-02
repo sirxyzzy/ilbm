@@ -75,7 +75,7 @@ impl<R: BufRead> Iterator for IffReader<R> {
 
         let len = u32::from_be_bytes(len_bytes);
 
-        println!("Found Chunk {} {}", String::from_utf8_lossy(&ck_id), len);
+        info!("Found Chunk {} {}", String::from_utf8_lossy(&ck_id), len);
 
         let mut data = vec![0u8; len as usize];
 

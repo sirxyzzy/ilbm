@@ -1,5 +1,7 @@
 #![feature(bufreader_seek_relative)]
 
+#[macro_use]
+extern crate log;
 pub mod iff;
 
 use std::fs::File;
@@ -113,7 +115,7 @@ pub fn read_from_file(file: File) -> Result<Image> {
     let reader = IffReader::new(BufReader::new(file));
 
     for chunk in reader {
-        println!("Chunk {}", chunk);
+        info!("Chunk {}", chunk);
 
         if chunk.is_form() {
             let is_ilbm = chunk.form_type() == b"ILBM";
@@ -126,7 +128,7 @@ pub fn read_from_file(file: File) -> Result<Image> {
                 let mut map: Option<ColorMap> = None;
 
                 for sub_chunk in chunk.sub_chunks() {
-                    println!("Sub chunk within form {}", sub_chunk);
+                    info!("Sub chunk within form {}", sub_chunk);
 
                     match sub_chunk.id() {
                         b"BMHD" => { 
@@ -136,23 +138,23 @@ pub fn read_from_file(file: File) -> Result<Image> {
                                 return Err(Error::NoImage);
                             }
 
-                            println!("Got {:?}", h);
+                            info!("Got {:?}", h);
                             header = Some(h);
                         }
 
                         b"CMAP" => {
                             let m = read_color_map(sub_chunk);
-                            println!("Got color map, size {}", m.colors.len());
+                            info!("Got color map, size {}", m.colors.len());
                             map = Some(m);
                         }
 
                         b"BODY" => {
-                            println!("Got BODY!");
+                            info!("Got BODY!");
                             return read_body(sub_chunk, header, map);
                         }
 
                         x => {
-                            println!("Skipping sub chunk {}", String::from_utf8_lossy(x));
+                            info!("Skipping sub chunk {}", String::from_utf8_lossy(x));
                             continue;
                         }
                     }
