@@ -37,10 +37,10 @@ type Result<T> = std::result::Result<T,Error>;
 
 #[repr(u8)]
 enum Masking {
-    None = 0, 
+    _None = 0, 
     HasMask = 1,
-    HasTransparentColor = 2,
-    Lasso = 3
+    _HasTransparentColor = 2,
+    _Lasso = 3
 }
 
 #[derive(Copy, Debug, Clone)]
@@ -198,7 +198,7 @@ fn read_body(chunk: IffChunk, header: Option<BitmapHeader>, map: Option<ColorMap
 }
 
 /// Read a body with no color map, so HAM (6 planes) or deep (24 or 32)
-fn read_body_no_map(chunk: IffChunk, header: BitmapHeader) -> Result<Image> {
+fn read_body_no_map(_chunk: IffChunk, _header: BitmapHeader) -> Result<Image> {
     return Err(Error::NotSupported("deep mode".to_string()));
 }
 

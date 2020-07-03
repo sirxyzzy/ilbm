@@ -1,7 +1,6 @@
-use std::io::{Read, Seek, SeekFrom, BufRead, BufReader, Cursor, Result};
+use std::io::{BufRead, BufReader, Cursor};
 use std::fmt;
 use std::convert::TryInto;
-use crate::Error;
 
 type ChunkId = [u8;4];
 
