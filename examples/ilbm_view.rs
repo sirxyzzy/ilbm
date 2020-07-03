@@ -17,7 +17,7 @@ fn main() -> Result<()> {
 
     info!("starting up");
 
-    // Get a list of files, parameters are either files, of folders
+    // Get a list of files, parameters are either files, or folders
     let files = args_to_file_list()?;
 
     if files.len() == 0 {
@@ -53,15 +53,15 @@ fn main() -> Result<()> {
 
     info!("DONE");
     
-
     Ok(())
 }
 
+/// Load an image from a file, and render it in a window
 fn load_and_show_image(path: &PathBuf, window: &Window) -> Result<()> {
     let name = path.to_string_lossy();
     info!("Loading {}", name);
     let image = ilbm::read_from_file( File::open(&path)?)?;
-    info!("Read an image, size {}", image.pixels.len());
+    debug!("Read an image, size {}", image.pixels.len());
 
     // Change to a form that show_image understands
     let pixels_and_info = (image.pixels, ImageInfo::rgb8(image.width, image.height));
@@ -72,22 +72,31 @@ fn load_and_show_image(path: &PathBuf, window: &Window) -> Result<()> {
     Ok(())
 }
 
+/// Take list or args, treat as files or folders and gather all
 fn args_to_file_list() -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = Vec::new();
     for arg in env::args().skip(1) {
-        let path = Path::new(&arg);
-
-        if path.is_file() {
-            files.push(path.to_path_buf());
-        } else if path.is_dir() {
-            for entry in fs::read_dir(path)? {
-                let entry = entry?;
-                let path_buf = entry.path();
-                if path_buf.is_file() {
-                    files.push(path_buf);
-                }
-            }
-        }
+        get_files(&Path::new(&arg), &mut files)?;
     }
     Ok(files)
+}
+
+/// Recursively gather all files...
+fn get_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path_buf = entry.path();
+            if path_buf.is_dir() {
+                get_files(&path_buf, files)?;
+            } else {
+                files.push(path_buf);
+            }
+        }
+    } else {
+        debug!("{} is not a file or folder, skipping!", path.to_string_lossy());
+    }
+    Ok(())
 }

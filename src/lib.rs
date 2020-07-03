@@ -100,6 +100,7 @@ impl<'a>  Iterator for RowIter<'a>  {
                 Err(_) => None
             }
         } else {
+            // Uncompressed...
             if self.raw_data.len() > self.width {
                 None
             } else {
@@ -116,7 +117,7 @@ pub fn read_from_file(file: File) -> Result<Image> {
     let reader = IffReader::new(BufReader::new(file));
 
     for chunk in reader {
-        info!("Chunk {}", chunk);
+        debug!("Chunk {}", chunk);
 
         if chunk.is_form() {
             let is_ilbm = chunk.form_type() == b"ILBM";
@@ -129,7 +130,7 @@ pub fn read_from_file(file: File) -> Result<Image> {
                 let mut map: Option<ColorMap> = None;
 
                 for sub_chunk in chunk.sub_chunks() {
-                    info!("Sub chunk within form {}", sub_chunk);
+                    debug!("Sub chunk within form {}", sub_chunk);
 
                     match sub_chunk.id() {
                         b"BMHD" => { 
@@ -139,23 +140,23 @@ pub fn read_from_file(file: File) -> Result<Image> {
                                 return Err(Error::NoImage);
                             }
 
-                            info!("Got {:?}", h);
+                            debug!("Got {:?}", h);
                             header = Some(h);
                         }
 
                         b"CMAP" => {
                             let m = read_color_map(sub_chunk);
-                            info!("Got color map, size {}", m.colors.len());
+                            debug!("Got color map, size {}", m.colors.len());
                             map = Some(m);
                         }
 
                         b"BODY" => {
-                            info!("Got BODY!");
+                            debug!("Got BODY!");
                             return read_body(sub_chunk, header, map);
                         }
 
                         x => {
-                            info!("Skipping sub chunk {}", String::from_utf8_lossy(x));
+                            debug!("Skipping sub chunk {}", String::from_utf8_lossy(x));
                             continue;
                         }
                     }
@@ -199,7 +200,7 @@ fn read_body(chunk: IffChunk, header: Option<BitmapHeader>, map: Option<ColorMap
 
 /// Read a body with no color map, so HAM (6 planes) or deep (24 or 32)
 fn read_body_no_map(_chunk: IffChunk, _header: BitmapHeader) -> Result<Image> {
-    return Err(Error::NotSupported("deep mode".to_string()));
+    Err(Error::NotSupported("deep mode".to_string()))
 }
 
 /// Read a body using a color map, pixel data is interpreted as indexes into the map  
@@ -248,14 +249,14 @@ fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMa
                         //  have more data than the width dictates
                         if index < width {
                             // Bit is on, so set the bit, corresponding with the plane, in the row data
-                            row[index] = row[index] | plane_bit;
+                            row[index] |= plane_bit;
                         }
                     }
-                    plane_byte = plane_byte << 1;
+                    plane_byte <<= 1;
                 }
             }
 
-            plane_bit = plane_bit << 1; 
+            plane_bit <<= 1; 
         }
 
         if header.masking == (Masking::HasMask as u8) {
@@ -322,12 +323,10 @@ pub fn unpacker(input: &[u8], byte_width: usize) -> Result<(&[u8], Vec<u8>)> {
             for _i in 0..(n+1) {
                 unpacked.push(data.get_u8());
             }
-        } else {
-            if n != -128 {
-                let b = data.get_u8();
-                for _i in 0..(-n + 1) {
-                    unpacked.push(b);
-                }
+        } else if n != -128 {
+            let b = data.get_u8();
+            for _i in 0..(-n + 1) {
+                unpacked.push(b);
             }
         }
     }
