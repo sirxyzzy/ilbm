@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
     // the rest of this is just the viewing logic...
 
-    // Create a window and display the image.
+    // Create a window to display the image.
     let window = make_window("ILBM View").unwrap();
 
     load_and_show_image(file_iter.next().unwrap(), &window)?;
