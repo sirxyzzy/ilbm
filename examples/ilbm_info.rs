@@ -23,6 +23,7 @@ fn main() -> Result<()> {
 
     let now = std::time::Instant::now();
     let mut count = 0;
+    let mut failed = 0;
 
     for path in files {
         count += 1;
@@ -30,18 +31,22 @@ fn main() -> Result<()> {
         info!("Loading {}", name);
         match ilbm::read_from_file( File::open(&path)?) {
             Ok(image) => {
-                print!("{} {}x{} planes:{} compression:{} masking:{:?} map:{}", image.form_type, image.width, image.height, image.planes, image.compression, image.masking, image.has_map);
-
+                print!("{} {}x{} planes:{} compression:{} masking:{:?} map:{} mode:{}",
+                    image.form_type, image.width, image.height, image.planes,
+                    image.compression, image.masking, image.map_size, image.display_mode);
                 for id in image.chunk_types {
                     print!(" {}", id);
                 }
                 println!(" ({})", name);
             }
-            Err(e) => println!("ERROR! Failed to load {} {}", name, e)
+            Err(e) => {
+                println!("ERROR! Failed to load {} {}", name, e);
+                failed += 1;
+            }
         }
     }
 
-    println!("Processed {} files in {:?}", count, now.elapsed());
+    println!("Processed {} files in {:?}, {} files failed to load", count, now.elapsed(), failed);
     
     Ok(())
 }
