@@ -3,12 +3,14 @@
 #[macro_use]
 extern crate log;
 pub mod iff;
+mod bytes;
 
 use std::fs::File;
-use iff::{IffReader, IffChunk};
+use iff::{IffReader, IffChunk, ChunkId};
 use std::io::BufReader;
-use bytes::buf::Buf;
 use thiserror::Error;
+use std::fmt;
+use bytes::BigEndian;
 
 /// Custom errors for ilbm library
 #[derive(Error, Debug)]
@@ -19,8 +21,16 @@ pub enum Error {
         found: String,
     },
 
+    #[error("invalid data: {0}")]
+    InvalidData (
+        String
+    ),
+
     #[error("File does not contain image data")]
     NoImage,
+
+    #[error("No planes, possibly a color map with no image data")]
+    NoPlanes,
 
     #[error("File does not contain image header (FORM.BMHD)")]
     NoHeader,
@@ -33,23 +43,46 @@ pub enum Error {
 }
 
 /// Standardize my result Errors
-type Result<T> = std::result::Result<T,Error>; 
+pub type Result<T> = std::result::Result<T,Error>; 
 
-#[repr(u8)]
-enum Masking {
-    _None = 0, 
+#[derive(Debug,Clone,Copy)]
+pub enum Masking {
+    None = 0, 
     HasMask = 1,
-    _HasTransparentColor = 2,
-    _Lasso = 3
+    HasTransparentColor = 2,
+    Lasso = 3
+}
+
+impl Default for Masking {
+    fn default() -> Self { Masking::None }
+}
+
+fn as_masking(v: u8) -> Masking {
+    match v {
+        0 => Masking::None,
+        1 => Masking::HasMask,
+        2 => Masking::HasTransparentColor,
+        3 => Masking::Lasso,
+        x => {
+            error!("Masking value of {} unsupported, mapping to None", x);
+            Masking::None
+        }
+    }
 }
 
 #[derive(Copy, Debug, Clone)]
 pub struct RgbValue (u8, u8, u8);
 
-#[derive(Debug, Clone)]
-pub struct Image {
+#[derive(Debug, Default)]
+pub struct IlbmImage {
+    pub form_type: ChunkId,
     pub width: usize,
     pub height: usize,
+    pub chunk_types: Vec<ChunkId>,
+    pub planes: usize,
+    pub masking: Masking,
+    pub compression: u8,
+    pub has_map: bool,
 
     /// RGB data
     /// Left to right in row, then bottom to top
@@ -58,6 +91,17 @@ pub struct Image {
     pub pixels: Vec<u8>
 }
 
+impl fmt::Display for IlbmImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> { 
+        write!(f, "{} {}x{} planes:{} map:{} masking:{:?} compression:{}", self.form_type, self.width, self.height, self.planes, self.has_map, self.masking, self.compression)
+    }
+}
+
+// impl Default for IlbmImage {
+//     fn default() -> Self { IlbmImage{..Default::default()} }
+// }
+
+/// Layout of the BMHD type
 #[derive(Debug, Clone)]
 struct BitmapHeader {
     w: u16, h: u16, // raster width & height in pixels
@@ -101,7 +145,7 @@ impl<'a>  Iterator for RowIter<'a>  {
             }
         } else {
             // Uncompressed...
-            if self.raw_data.len() > self.width {
+            if self.raw_data.len() < self.width {
                 None
             } else {
                 let width = self.width;
@@ -113,50 +157,66 @@ impl<'a>  Iterator for RowIter<'a>  {
     }
 }
 
-pub fn read_from_file(file: File) -> Result<Image> {
+pub fn read_from_file(file: File) -> Result<IlbmImage> {
     let reader = IffReader::new(BufReader::new(file));
 
     for chunk in reader {
         debug!("Chunk {}", chunk);
 
         if chunk.is_form() {
-            let is_ilbm = chunk.form_type() == b"ILBM";
-            let is_lbm = chunk.form_type() == b"LBM ";
-            if  is_ilbm || is_lbm {
+            let is_ilbm = &chunk.form_type() == b"ILBM";
+            let is_pbm = &chunk.form_type() == b"PBM ";
+            if  is_ilbm || is_pbm {
+                let mut image = IlbmImage{ form_type: chunk.form_type(), ..Default::default() };
 
-                // We hopefully find and stash away some data which we find expect
-                // to the BODY
+                // We hopefully find and stash away some data which we
+                // expect to find prior to the BODY
                 let mut header: Option<BitmapHeader> = None;
                 let mut map: Option<ColorMap> = None;
 
-                for sub_chunk in chunk.sub_chunks() {
-                    debug!("Sub chunk within form {}", sub_chunk);
 
-                    match sub_chunk.id() {
+
+                for sub_chunk in chunk.sub_chunks() {
+
+                    image.chunk_types.push(sub_chunk.id());
+
+                    match &sub_chunk.id().0 {
                         b"BMHD" => { 
                             let h = read_bitmap_header(sub_chunk)?;
 
+
+
+                            image.width = h.w as usize;
+                            image.height = h.h as usize;
+                            image.planes = h.planes as usize;
+                            image.masking = as_masking(h.masking);
+                            image.compression = h.compression;
+
+                            debug!("BMHD {:?}", h);
+
                             if h.planes == 0 {
-                                return Err(Error::NoImage);
+                                return Err(Error::NoPlanes);
                             }
 
-                            debug!("Got {:?}", h);
                             header = Some(h);
                         }
 
                         b"CMAP" => {
-                            let m = read_color_map(sub_chunk);
-                            debug!("Got color map, size {}", m.colors.len());
+                            let m = read_color_map(sub_chunk)?;
+                            debug!("Got color map, of size {}", m.colors.len());
+                            image.has_map = true;
                             map = Some(m);
                         }
 
                         b"BODY" => {
                             debug!("Got BODY!");
-                            return read_body(sub_chunk, header, map);
+                            let pixels = read_body(sub_chunk, header, map)?;
+                            image.pixels = pixels; 
+                            return Ok(image)
                         }
 
-                        x => {
-                            debug!("Skipping sub chunk {}", String::from_utf8_lossy(x));
+                        _ => {
+                            debug!("Skipping sub chunk {}", sub_chunk.id());
                             continue;
                         }
                     }
@@ -168,7 +228,7 @@ pub fn read_from_file(file: File) -> Result<Image> {
     Err(Error::NoImage)
 }
 
-fn read_color_map(chunk: IffChunk) -> ColorMap {
+fn read_color_map(chunk: IffChunk) -> Result<ColorMap> {
     let mut buf = &chunk.data()[..];
 
     let count = buf.len() / 3;
@@ -178,17 +238,17 @@ fn read_color_map(chunk: IffChunk) -> ColorMap {
     for _i in 0..count {
         colors.push(
             RgbValue(
-                buf.get_u8(),
-                buf.get_u8(),
-                buf.get_u8()
+                buf.get_u8()?,
+                buf.get_u8()?,
+                buf.get_u8()?
             )
         );
     }
 
-    ColorMap{colors}
+    Ok(ColorMap{colors})
 }
 
-fn read_body(chunk: IffChunk, header: Option<BitmapHeader>, map: Option<ColorMap>) -> Result<Image> {
+fn read_body(chunk: IffChunk, header: Option<BitmapHeader>, map: Option<ColorMap>) -> Result<Vec<u8>> {
     match header {
         Some(header) => match map {
             Some(map) => read_body_with_cmap(chunk, header, map),
@@ -199,12 +259,12 @@ fn read_body(chunk: IffChunk, header: Option<BitmapHeader>, map: Option<ColorMap
 }
 
 /// Read a body with no color map, so HAM (6 planes) or deep (24 or 32)
-fn read_body_no_map(_chunk: IffChunk, _header: BitmapHeader) -> Result<Image> {
+fn read_body_no_map(_chunk: IffChunk, _header: BitmapHeader) -> Result<Vec<u8>> {
     Err(Error::NotSupported("deep mode".to_string()))
 }
 
 /// Read a body using a color map, pixel data is interpreted as indexes into the map  
-fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMap) -> Result<Image> {
+fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMap) -> Result<Vec<u8>> {
     // Having a CMAP implies certain limitations, here we limit color indices to a u8
     // so the number of planes cannot exceed 8 (bits) and the map must be big enough
     if header.planes > 8 {
@@ -277,7 +337,7 @@ fn read_body_with_cmap(chunk: IffChunk, header: BitmapHeader, color_map: ColorMa
 
     assert_eq!(pixels.len(), 3 * width * height);
 
-    Ok(Image{width, height, pixels})
+    Ok(pixels)
 }
 
 fn read_bitmap_header(chunk: IffChunk) -> Result<BitmapHeader> {
@@ -286,19 +346,19 @@ fn read_bitmap_header(chunk: IffChunk) -> Result<BitmapHeader> {
     assert!(buf.len() >= 20);
 
     let header = BitmapHeader{
-        w: buf.get_u16(),
-        h: buf.get_u16(),
-        x: buf.get_i16(),
-        y: buf.get_i16(),
-        planes: buf.get_u8(),
-        masking: buf.get_u8(),
-        compression: buf.get_u8(),
-        pad: buf.get_u8(), // Unused
-        transparent_color: buf.get_u16(),          // transparent "color number" (sort of)
-        x_aspect: buf.get_u8(),
-        y_aspect: buf.get_u8(),       // pixel aspect, a ratio width : height
-        page_width: buf.get_i16(),
-        page_height: buf.get_i16()
+        w: buf.get_u16()?,
+        h: buf.get_u16()?,
+        x: buf.get_i16()?,
+        y: buf.get_i16()?,
+        planes: buf.get_u8()?,
+        masking: buf.get_u8()?,
+        compression: buf.get_u8()?,
+        pad: buf.get_u8()?, // Unused
+        transparent_color: buf.get_u16()?,          // transparent "color number" (sort of)
+        x_aspect: buf.get_u8()?,
+        y_aspect: buf.get_u8()?,       // pixel aspect, a ratio width : height
+        page_width: buf.get_i16()?,
+        page_height: buf.get_i16()?
     };
 
     Ok(header)
@@ -318,22 +378,24 @@ pub fn unpacker(input: &[u8], byte_width: usize) -> Result<(&[u8], Vec<u8>)> {
     let mut unpacked: Vec<u8> = Vec::with_capacity(byte_width);
 
     while unpacked.len() < byte_width {
-        let n = data.get_i8();
+        let n = data.get_i8()?;
         if n >= 0 {
             for _i in 0..(n+1) {
-                unpacked.push(data.get_u8());
+                unpacked.push(data.get_u8()?);
             }
         } else if n != -128 {
-            let b = data.get_u8();
+            let b = data.get_u8()?;
             for _i in 0..(-n + 1) {
                 unpacked.push(b);
             }
         }
     }
 
-    assert_eq!(unpacked.len(), byte_width, "Unpacker expanded to too many bytes");
-
-    Ok((data, unpacked))
+    if unpacked.len() != byte_width {
+        Err(Error::InvalidData(format!("decompression unpacked too many bytes, expected {} but got {}", byte_width, unpacked.len())))
+    } else {
+        Ok((data, unpacked))
+    }
 }
 
 #[cfg(test)]

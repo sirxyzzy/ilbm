@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
         .init();
 
     info!("starting up");
@@ -59,9 +58,10 @@ fn main() -> Result<()> {
 /// Load an image from a file, and render it in a window
 fn load_and_show_image(path: &PathBuf, window: &Window) -> Result<()> {
     let name = path.to_string_lossy();
-    info!("Loading {}", name);
+    println!("Loading {}", name);
     let image = ilbm::read_from_file( File::open(&path)?)?;
-    debug!("Read an image, size {}", image.pixels.len());
+    println!("{} {}x{} planes:{} size:{}", image.form_type, image.width, image.height, image.planes, image.pixels.len());
+
 
     // Change to a form that show_image understands
     let pixels_and_info = (image.pixels, ImageInfo::rgb8(image.width, image.height));

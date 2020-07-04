@@ -2,7 +2,26 @@ use std::io::{BufRead, BufReader, Cursor};
 use std::fmt;
 use std::convert::TryInto;
 
-type ChunkId = [u8;4];
+#[derive(PartialEq, Copy, Clone, Debug)]
+pub struct ChunkId (
+    pub [u8;4]
+);
+
+impl PartialEq<[u8;4]> for ChunkId {
+    fn eq(&self, other: &[u8;4]) -> bool {
+        self.0 == *other
+    }
+}
+
+impl fmt::Display for ChunkId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(&self.0))
+    }
+}
+
+impl Default for ChunkId {
+    fn default() -> Self { ChunkId([63;4]) } // b"????"
+}
 
 pub struct IffReader<R: BufRead> {
     reader: R,
@@ -21,12 +40,13 @@ pub struct IffChunk {
 }
 
 impl IffChunk {
-    pub fn id(&self) -> &ChunkId { &self.ck_id }
+    pub fn id(&self) -> ChunkId { self.ck_id }
     pub fn data(&self) -> &[u8] { &self.data }
     pub fn is_form(&self) -> bool { &self.ck_id == b"FORM" }
-    pub fn form_type(&self) -> &ChunkId { 
+    pub fn form_type(&self) -> ChunkId { 
         if self.is_form() && self.data.len() >= 4 {
-            self.data[..4].try_into().unwrap()
+            // Since we validated the length, we can safely unwrap here
+            ChunkId(self.data[..4].try_into().unwrap())
         } else {
             panic!("Ouch, where is my form type!");
         }
@@ -41,9 +61,9 @@ impl IffChunk {
 impl fmt::Display for IffChunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_form() && self.data.len() >= 4 {
-            write!(f, "FORM Chunk {}, length {}", String::from_utf8_lossy(&self.data[..4]), self.data.len())
+            write!(f, "FORM Chunk {}, length {}", self.form_type(), self.data.len())
         } else {
-            write!(f, "{} Chunk, length {}", String::from_utf8_lossy(&self.ck_id), self.data.len())
+            write!(f, "{} Chunk, length {}", self.ck_id, self.data.len())
         }
     }
 }
@@ -60,11 +80,13 @@ impl<R: BufRead> Iterator for IffReader<R> {
             }
         }
 
-        let mut ck_id = [0u8; 4];
+        let mut id = [0u8; 4];
 
-        if self.reader.read_exact(&mut ck_id).is_err() {
+        if self.reader.read_exact(&mut id).is_err() {
             return None;
         }
+
+        let ck_id = ChunkId(id);
 
         let mut len_bytes = [0u8; 4];
 
@@ -74,7 +96,7 @@ impl<R: BufRead> Iterator for IffReader<R> {
 
         let len = u32::from_be_bytes(len_bytes);
 
-        debug!("Found Chunk {} {}", String::from_utf8_lossy(&ck_id), len);
+        debug!("Found Chunk {} {}", ck_id, len);
 
         let mut data = vec![0u8; len as usize];
 
