@@ -47,12 +47,12 @@ pub enum Error {
 /// Standardize my result Errors
 pub type Result<T> = std::result::Result<T,Error>;
 
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug,Clone,Copy, PartialEq)]
 pub enum Masking {
-    None = 0, 
-    HasMask = 1,
-    HasTransparentColor = 2,
-    Lasso = 3
+    None, 
+    HasMask,
+    HasTransparentColor,
+    Lasso
 }
 
 impl Default for Masking {
@@ -89,20 +89,26 @@ impl std::fmt::Display for DisplayMode {
     }
 }
 
-#[derive(Copy, Debug, Clone)]
+#[derive(Copy, Debug, Clone, Default)]
 pub struct RgbValue (u8, u8, u8);
 
+/// This is an amalgam of information drawn from
+/// various chunks in the ILBM, mapped to more native
+/// types such as usize for u16
 #[derive(Debug, Default)]
 pub struct IlbmImage {
     pub form_type: ChunkId,
-    pub width: usize,
-    pub height: usize,
+    pub size: Size2D,
     pub chunk_types: Vec<ChunkId>,
     pub planes: usize,
     pub masking: Masking,
-    pub compression: u8,
+    pub compression: bool,
     pub map_size: usize,
     pub display_mode: DisplayMode,
+    pub dpi: Size2D,
+    pub pixel_aspect: Size2D,
+    pub transparent_color: usize, // Actually a color index
+    pub page_size: Size2D,
 
     /// RGB data triples
     /// Left to right in row, then top to bottom
@@ -111,18 +117,27 @@ pub struct IlbmImage {
     pub pixels: Vec<u8>
 }
 
-/// Layout of the BMHD type
-#[derive(Debug, Clone)]
-struct BitmapHeader {
-    w: u16, h: u16, // raster width & height in pixels
-    x: i16, y: i16, // Ignored: pixel position in a larger space to render this image
-    planes: u8,    // # source bitplanes, 0 indicates this is a color map only
-    masking: u8,
-    compression: u8,
-    pad: u8, // Unused
-    transparent_color: u16,          // transparent "color number" (sort of)
-    x_aspect: u8, y_aspect: u8,       // pixel aspect, a ratio width : height
-    page_width: i16, page_height: i16 // Ignored: source "page" size in pixels
+impl std::fmt::Display for IlbmImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        write!(f, "{} {} dpi:{} planes:{} compression:{} masking:{:?} map:{} mode:{} aspect:{} trans:{} page:{}",
+        self.form_type, self.size, self.dpi, self.planes,
+        self.compression, self.masking, self.map_size, self.display_mode, 
+        self.pixel_aspect, self.transparent_color, self.page_size)
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub struct Size2D (usize,usize);
+
+impl Size2D {
+    pub fn width(&self) -> usize {self.0}
+    pub fn height(&self) -> usize {self.1}
+}
+
+impl std::fmt::Display for Size2D {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        write!(f, "{}x{}", self.width(), self.height()) 
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -179,10 +194,8 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
             if  is_ilbm || is_pbm {
                 let mut image = IlbmImage{ form_type: chunk.form_type(), ..Default::default() };
 
-                // We hopefully find and stash away some data which we
-                // expect to find prior to the BODY
-                let mut header: Option<BitmapHeader> = None;
                 let mut map: Option<ColorMap> = None;
+                let mut got_header = false;
 
                 for sub_chunk in chunk.sub_chunks() {
 
@@ -190,29 +203,8 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
 
                     match &sub_chunk.id().0 {
                         b"BMHD" => { 
-                            let h = read_bitmap_header(sub_chunk)?;
-
-                            image.width = h.w as usize;
-                            image.height = h.h as usize;
-                            image.planes = h.planes as usize;
-                            image.masking = as_masking(h.masking);
-                            image.compression = h.compression;
-
-                            debug!("BMHD {:?}", h);
-
-                            // Lets do some early validations of crazy
-                            if h.w == 0 || h.h == 0 {
-                                return Err(Error::InvalidHeader{ 
-                                    expected: "non-zero height and width".to_string(),
-                                    actual: format!("{}x{}", h.w, h.h)
-                                });
-                            }
-
-                            if h.planes == 0 {
-                                return Err(Error::NoPlanes);
-                            }
-
-                            header = Some(h);
+                            read_bitmap_header(sub_chunk, &mut image)?;
+                            got_header = true;
                         }
 
                         b"CMAP" => {
@@ -228,10 +220,20 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
                             image.display_mode = mode;
                         }
 
+                        b"DPI " => {
+                            let dpi = read_dpi(sub_chunk)?;
+                            debug!("Got dpi: {}", dpi);
+                            image.dpi = dpi;
+                        }
+
                         b"BODY" => {
                             debug!("Got BODY!");
-                            let pixels = read_body(sub_chunk, image.display_mode, header, map)?;
-                            image.pixels = pixels; 
+
+                            if !got_header {
+                                return Err(Error::NoHeader)
+                            }
+
+                            read_body(sub_chunk, image.display_mode, map, &mut image)?;
                             return Ok(image)
                         }
 
@@ -246,6 +248,13 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
     }
 
     Err(Error::NoImage)
+}
+
+fn read_dpi(chunk: IffChunk) -> Result<Size2D> {
+    Ok(Size2D(
+        chunk.data().get_u16()? as usize,
+        chunk.data().get_u16()? as usize,
+    ))
 }
 
 fn read_display_mode(chunk: IffChunk) -> Result<DisplayMode> {
@@ -288,36 +297,33 @@ fn read_color_map(chunk: IffChunk) -> Result<ColorMap> {
     Ok(ColorMap{colors})
 }
 
-fn read_body(chunk: IffChunk, mode:DisplayMode, header: Option<BitmapHeader>, map: Option<ColorMap>) -> Result<Vec<u8>> {
-    match header {
-        Some(header) => match map {
-            Some(map) => read_body_with_cmap(chunk, mode, header, map),
-            None => read_body_no_map(chunk, mode, header)
-        },
-        None => Err(Error::NoHeader)
+fn read_body(chunk: IffChunk, mode:DisplayMode, map: Option<ColorMap>, image: &mut IlbmImage) -> Result<()> {
+    match map {
+        Some(map) => read_body_with_cmap(chunk, mode, map, image),
+        None => read_body_no_map(chunk, mode, image)
     }
 }
 
 /// Read a body with no color map, so HAM (6 planes) or deep (24 or 32)
-fn read_body_no_map(_chunk: IffChunk, _mode:DisplayMode, _header: BitmapHeader) -> Result<Vec<u8>> {
+fn read_body_no_map(_chunk: IffChunk, _mode:DisplayMode, _image: &mut IlbmImage) -> Result<()> {
     Err(Error::NotSupported("deep mode".to_string()))
 }
 
 /// Read a body using a color map, pixel data is interpreted as indexes into the map  
-fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, header: BitmapHeader, color_map: ColorMap) -> Result<Vec<u8>> {
+fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, image: &mut IlbmImage) -> Result<()> {
     // Having a CMAP implies certain limitations, here we limit color indices to a u8
     // so the number of planes cannot exceed 8 (bits) and the map must be big enough
-    if header.planes > 8 {
+    if image.planes > 8 {
         return Err(Error::NotSupported("Color map with more than 8 planes".to_string()));
     }
 
-    let width = header.w as usize;
-    let height = header.h as usize;
+    let Size2D(width, height) = image.size;
+    let planes = image.planes;
 
     // Bytes per row (always EVEN)
     let row_stride = ((width + 15)/16) * 2;
 
-    let mut rows = RowIter::new(chunk.data(), row_stride, header.compression != 0);
+    let mut rows = RowIter::new(chunk.data(), row_stride, image.compression);
 
     // We assemble all the resolved RGB values in here
     let mut pixels= Vec::<u8>::with_capacity(3 * width * height);
@@ -325,7 +331,7 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, header: BitmapHeader, 
     for _row in 0..height {
         let mut row= vec![0u8;width];
         let mut plane_bit: u8 = 1;
-        for _plane in 0..header.planes {
+        for _plane in 0..planes {
             let row_data = rows.next().ok_or(Error::NoData)?;
 
             // Read planes, each plane contributes 1 bit
@@ -352,7 +358,7 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, header: BitmapHeader, 
             plane_bit <<= 1; 
         }
 
-        if header.masking == (Masking::HasMask as u8) {
+        if image.masking == Masking::HasMask {
             // Read mask plane, we don't support this yet,
             // need to go RGBA to do so
             
@@ -361,7 +367,7 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, header: BitmapHeader, 
         }
 
         if mode.is_ham() {
-            push_row_bytes_ham(row, header.planes, &color_map, &mut pixels)?;
+            push_row_bytes_ham(row, planes, &color_map, &mut pixels)?;
         } else if mode.is_halfbrite() {
             push_row_bytes_halfbrite(row, &color_map, &mut pixels)?;
         } else {
@@ -371,7 +377,9 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, header: BitmapHeader, 
 
     assert_eq!(pixels.len(), 3 * width * height);
 
-    Ok(pixels)
+    image.pixels = pixels;
+
+    Ok(())
 }
 
 /// simple case where we simply index into the pixel map
@@ -396,19 +404,19 @@ fn push_row_bytes(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> R
 }
 
 /// HAM is tricky, it works by reserving two planes (hence two bits) to indicate
-/// whether we index as normal (using planes -1 bits) or if we take those low order
+/// whether we index as normal (using planes-2 bits) or if we take those low order
 // bits to modify the PREVIOUS value
-fn push_row_bytes_ham(row: Vec<u8>, planes: u8, color_map: &ColorMap, pixels: &mut Vec<u8>) -> Result<()> {
+fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels: &mut Vec<u8>) -> Result<()> {
     // Resolve through color map, and add to output vector
     let size = color_map.colors.len();
 
     // In ham, we steal two planes to determine the modify part
     // and mask the color index appropriately
-    let mod_shift = planes - 2u8;
+    let mod_shift = planes - 2;
     let index_mask = (10u8 << mod_shift) - 1;
 
     // The modify color needs to be shifted as generally is is less than 8 bits long
-    let mod_color_shift = 8u8 - mod_shift; // Right shift applied to color when modifying 
+    let mod_color_shift = 8 - mod_shift; // Left shift applied to color when modifying 
 
     // Make sure we have at least a border color
     if size == 0 {
@@ -419,8 +427,8 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: u8, color_map: &ColorMap, pixels: &m
     let mut prev_color = color_map.colors[0];
 
     for p in row {
-        let mod_bits = p >> mod_shift;  // These indicate whether we modify
-        let low_bits = p & index_mask;  // These are used as an index, or one component when modifying
+        let mod_bits = p >> mod_shift;  // After this shift, mod_bits indicate whether we modify
+        let low_bits = p & index_mask;  // Mask off the mod bits for the actual index (if used)
 
         let rgb = 
             match mod_bits {
@@ -432,35 +440,28 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: u8, color_map: &ColorMap, pixels: &m
                     }           
                     color_map.colors[index]
                 }
-                1 => {
+                2 => {
                     // Modify RED in previous
                     let mut component = low_bits << mod_color_shift;
                     // Sadly, that shifted zeros into the low end, so we would never reach peak intensity
-                    // we fix that up by grabbing the appropriate number of bits from the high end!
+                    // we fix that up by grabbing the appropriate number of bits from the high end and
+                    // or-ing back to the low end
                     component |= component >> (8-mod_color_shift);
 
-                    // Finally modify the appropriate component
+                    // Finally modify the RED component
                     RgbValue(component, prev_color.1, prev_color.2)   
                 }
-                2 => {
-                    // Modify GREEN in previous
-                    let mut component = low_bits << mod_color_shift;
-                    // Sadly, that shifted zeros into the low end, so we would never reach peak intensity
-                    // we fix that up by grabbing the appropriate number of bits from the high end!
-                    component |= component >> (8-mod_color_shift);
-
-                    // Finally modify the appropriate component
-                    RgbValue(prev_color.0, component, prev_color.2)   
-                }
-                3 => {
+                1 => {
                     // Modify BLUE in previous
                     let mut component = low_bits << mod_color_shift;
-                    // Sadly, that shifted zeros into the low end, so we would never reach peak intensity
-                    // we fix that up by grabbing the appropriate number of bits from the high end!
                     component |= component >> (8-mod_color_shift);
-
-                    // Finally modify the appropriate component
                     RgbValue(prev_color.0, prev_color.1, component)   
+                }
+                3 => {
+                    // Modify GREEN in previous
+                    let mut component = low_bits << mod_color_shift;
+                    component |= component >> (8-mod_color_shift);
+                    RgbValue(prev_color.0, component, prev_color.2)   
                 }
                 _ => panic!("Logically, we cannot get here, as we only masked two bits, the compiler can't work that out!")
             };
@@ -509,28 +510,38 @@ fn push_row_bytes_halfbrite(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec
     Ok(())
 }
 
-fn read_bitmap_header(chunk: IffChunk) -> Result<BitmapHeader> {
+fn read_bitmap_header(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
     let mut buf = &chunk.data()[..];
 
     assert!(buf.len() >= 20);
+    image.size = Size2D(buf.get_u16()? as usize, buf.get_u16()? as usize);
 
-    let header = BitmapHeader{
-        w: buf.get_u16()?,
-        h: buf.get_u16()?,
-        x: buf.get_i16()?,
-        y: buf.get_i16()?,
-        planes: buf.get_u8()?,
-        masking: buf.get_u8()?,
-        compression: buf.get_u8()?,
-        pad: buf.get_u8()?, // Unused
-        transparent_color: buf.get_u16()?,          // transparent "color number" (sort of)
-        x_aspect: buf.get_u8()?,
-        y_aspect: buf.get_u8()?,       // pixel aspect, a ratio width : height
-        page_width: buf.get_i16()?,
-        page_height: buf.get_i16()?
-    };
+    let _x = buf.get_i16()?;
+    let _y = buf.get_i16()?;
 
-    Ok(header)
+    image.planes = buf.get_u8()? as usize;
+    image.masking = as_masking(buf.get_u8()?);
+    image.compression = buf.get_u8()? != 0;
+
+    let _pad = buf.get_u8()?;
+
+    image.transparent_color = buf.get_u16()? as usize;
+    image.pixel_aspect = Size2D(buf.get_u8()? as usize, buf.get_u8()? as usize);
+    image.page_size = Size2D(buf.get_i16()? as usize, buf.get_i16()? as usize);
+
+    // Lets do some early validations of crazy
+    if image.size.0 == 0 || image.size.1 == 0 {
+        return Err(Error::InvalidHeader{ 
+            expected: "non-zero height and width".to_string(),
+            actual: format!("{}", image.size)
+        });
+    }
+
+    if image.planes == 0 {
+        return Err(Error::NoPlanes);
+    }
+
+    Ok(())
 }
 
 // UnPacker:
