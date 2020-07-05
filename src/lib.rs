@@ -49,25 +49,25 @@ pub type Result<T> = std::result::Result<T,Error>;
 
 #[derive(Debug,Clone,Copy, PartialEq)]
 pub enum Masking {
-    None, 
+    NoMask, 
     HasMask,
     HasTransparentColor,
     Lasso
 }
 
 impl Default for Masking {
-    fn default() -> Self { Masking::None }
+    fn default() -> Self { Masking::NoMask }
 }
 
 fn as_masking(v: u8) -> Masking {
     match v {
-        0 => Masking::None,
+        0 => Masking::NoMask,
         1 => Masking::HasMask,
         2 => Masking::HasTransparentColor,
         3 => Masking::Lasso,
         x => {
             error!("Masking value of {} unsupported, mapping to None", x);
-            Masking::None
+            Masking::NoMask
         }
     }
 }
@@ -84,7 +84,7 @@ impl DisplayMode {
 
 impl std::fmt::Display for DisplayMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-        let mode_type = if self.is_ham() { "HAM" } else if self.is_halfbrite() { "HALFBRITE" } else {""};
+        let mode_type = if self.is_ham() { "HAM" } else if self.is_halfbrite() { "HALF" } else {""};
         write!(f, "0x{:X} {}", self.0, mode_type) 
     }
 }
@@ -119,9 +119,10 @@ pub struct IlbmImage {
 
 impl std::fmt::Display for IlbmImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-        write!(f, "{} {} dpi:{} planes:{} compression:{} masking:{:?} map:{} mode:{} aspect:{} trans:{} page:{}",
+        let compressed = if self.compression { "Comp" } else { "" };
+        write!(f, "{} {} dpi:{} p:{} {} {:?} map:{} mode:{} aspect:{} trans:{} page:{}",
         self.form_type, self.size, self.dpi, self.planes,
-        self.compression, self.masking, self.map_size, self.display_mode, 
+        compressed, self.masking, self.map_size, self.display_mode, 
         self.pixel_aspect, self.transparent_color, self.page_size)
     }
 }
@@ -336,9 +337,8 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
 
             // Read planes, each plane contributes 1 bit
 
-            // For all bytes in the row
-            for offset in 0..row_stride {
-                let mut plane_byte = row_data[offset];
+            for (offset, byte) in row_data.iter().enumerate() {
+                let mut plane_byte = *byte;
 
                 for b in 0..8 {
                     if plane_byte & 0x80 != 0 {
@@ -355,6 +355,7 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
                 }
             }
 
+            // planes start at the low bit, so shift left the bit we or into the result
             plane_bit <<= 1; 
         }
 

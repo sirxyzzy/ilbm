@@ -31,11 +31,7 @@ fn main() -> Result<()> {
         info!("Loading {}", name);
         match ilbm::read_from_file( File::open(&path)?) {
             Ok(image) => {
-                println!("{} ({})", image, name);
-                for id in image.chunk_types {
-                    print!(" {}", id);
-                }
-                println!();
+                println!("{} {}", image, name);
             }
             Err(e) => {
                 println!("ERROR! Failed to load {} {}", name, e);
