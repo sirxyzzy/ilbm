@@ -34,8 +34,8 @@ pub enum Error {
     #[error("File does not contain image header (FORM.BMHD)")]
     NoHeader,
 
-    #[error("Color map of size {size:?} has no entry for {index:?}")]
-    NoMapEntry{ index: usize, size: usize},
+    #[error("Color map of map_size {map_size:?} has no entry for {index:?}")]
+    NoMapEntry{ index: usize, map_size: usize},
 
     #[error("Unexpected end of image data")]
     NoData,
@@ -99,11 +99,11 @@ pub struct RgbValue (u8, u8, u8);
 pub struct IlbmImage {
     pub form_type: ChunkId,
     pub size: Size2D,
+    pub map_size: usize,
     pub chunk_types: Vec<ChunkId>,
     pub planes: usize,
     pub masking: Masking,
     pub compression: bool,
-    pub map_size: usize,
     pub display_mode: DisplayMode,
     pub dpi: Size2D,
     pub pixel_aspect: Size2D,
@@ -210,7 +210,7 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
 
                         b"CMAP" => {
                             let m = read_color_map(sub_chunk)?;
-                            debug!("Got color map, of size {}", m.colors.len());
+                            debug!("Got color map, of map_size {}", m.colors.len());
                             image.map_size = m.colors.len();
                             map = Some(m);
                         }
@@ -388,10 +388,10 @@ fn push_row_bytes(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> R
     // Resolve through color map, and add to output vector
     for p in row {
         let index = p as usize;
-        let size = color_map.colors.len();
+        let map_size = color_map.colors.len();
 
-        if index >= size  {
-            return Err(Error::NoMapEntry{index, size})
+        if index >= map_size  {
+            return Err(Error::NoMapEntry{index, map_size})
         }
 
         let rgb = color_map.colors[index];
@@ -409,70 +409,76 @@ fn push_row_bytes(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> R
 // bits to modify the PREVIOUS value
 fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels: &mut Vec<u8>) -> Result<()> {
     // Resolve through color map, and add to output vector
-    let size = color_map.colors.len();
+    let map_size = color_map.colors.len();
 
     // In ham, we steal two planes to determine the modify part
     // and mask the color index appropriately
     let mod_shift = planes - 2;
-    let index_mask = (10u8 << mod_shift) - 1;
+    let index_mask = (1 << mod_shift) - 1;
 
-    // The modify color needs to be shifted as generally is is less than 8 bits long
+    // The modify color needs to be shifted back, as generally is is less than 8 bits long
+    // but we always render to 8 bit components
     let mod_color_shift = 8 - mod_shift; // Left shift applied to color when modifying 
 
-    // Make sure we have at least a border color
-    if size == 0 {
-        return Err(Error::NoMapEntry{index:0, size})
+    // Make sure we have at least a border color, I don't want to panic
+    if map_size == 0 {
+        return Err(Error::NoMapEntry{index:0, map_size})
     }
     
     // If we modify at the start of the row, we modify the so called border color
-    let mut prev_color = color_map.colors[0];
+    let mut color = color_map.colors[0];
 
     for p in row {
-        let mod_bits = p >> mod_shift;  // After this shift, mod_bits indicate whether we modify
-        let low_bits = p & index_mask;  // Mask off the mod bits for the actual index (if used)
+        let row_val = p as usize;
+        let mod_bits = row_val >> mod_shift;  // After this shift, low order mod_bits indicate whether we modify
+        let low_bits = row_val & index_mask;  // Mask off the mod bits for just the actual index (if used)
+ 
+        // Based on the mod bits, either replace the color
+        // with one in the color map, or modify one component
+        // of the previous color
+        match mod_bits {
+            0 => {
+                // Index as normal using low order bits
+                if low_bits >= map_size  {
+                    return Err(Error::NoMapEntry{index:low_bits, map_size})
+                }  
+                
+                // Just use the color in the map, no "modify"
+                color = color_map.colors[low_bits]
+            }
+            2 => {
+                // Modify RED in previous, scale to make 8 bit
+                let mut component = low_bits << mod_color_shift;
 
-        let rgb = 
-            match mod_bits {
-                0 => {
-                    // Index as normal using low order bits
-                    let index = low_bits as usize;
-                    if index >= size  {
-                        return Err(Error::NoMapEntry{index, size})
-                    }           
-                    color_map.colors[index]
-                }
-                2 => {
-                    // Modify RED in previous
-                    let mut component = low_bits << mod_color_shift;
-                    // Sadly, that shifted zeros into the low end, so we would never reach peak intensity
-                    // we fix that up by grabbing the appropriate number of bits from the high end and
-                    // or-ing back to the low end
-                    component |= component >> (8-mod_color_shift);
+                // Sadly, that shifted zeros into the low end, so we would never reach peak intensity
+                // we fix that up by grabbing the appropriate number of bits from the high end and
+                // or-ing back to the low end
+                component |= component >> (8-mod_color_shift);
 
-                    // Finally modify the RED component
-                    RgbValue(component, prev_color.1, prev_color.2)   
-                }
-                1 => {
-                    // Modify BLUE in previous
-                    let mut component = low_bits << mod_color_shift;
-                    component |= component >> (8-mod_color_shift);
-                    RgbValue(prev_color.0, prev_color.1, component)   
-                }
-                3 => {
-                    // Modify GREEN in previous
-                    let mut component = low_bits << mod_color_shift;
-                    component |= component >> (8-mod_color_shift);
-                    RgbValue(prev_color.0, component, prev_color.2)   
-                }
-                _ => panic!("Logically, we cannot get here, as we only masked two bits, the compiler can't work that out!")
-            };
+                // Based on the mod_bits, modify the corresponding component
+                // RgbValue(component, prev_color.1, prev_color.2)
+                color.0 = component as u8;
+            }
+            1 => {
+                // Modify BLUE in previous
+                let mut component = low_bits << mod_color_shift;
+                component |= component >> (8-mod_color_shift);
+                // RgbValue(prev_color.0, prev_color.1, component)
+                color.2 = component as u8;    
+            }
+            3 => {
+                // Modify GREEN in previous
+                let mut component = low_bits << mod_color_shift;
+                component |= component >> (8-mod_color_shift);
+                // RgbValue(prev_color.0, component, prev_color.2)
+                color.1 = component as u8;   
+            }
+            _ => panic!("Logically, we cannot get here, as we only masked two bits, the compiler can't work that out!")
+        }
 
-        pixels.push(rgb.0);
-        pixels.push(rgb.1);
-        pixels.push(rgb.2);
-
-        // Track the previous color, we may need to use it as a basis for modification
-        prev_color = rgb;
+        pixels.push(color.0);
+        pixels.push(color.1);
+        pixels.push(color.2);
     }
 
     Ok(())
@@ -487,10 +493,10 @@ fn push_row_bytes_halfbrite(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec
     for p in row {
         let index = (p >> 1) as usize;
 
-        let size = color_map.colors.len();
+        let map_size = color_map.colors.len();
 
-        if index >= size  {
-            return Err(Error::NoMapEntry{index, size})
+        if index >= map_size  {
+            return Err(Error::NoMapEntry{index, map_size})
         }
 
         let rgb = color_map.colors[index];

@@ -40,7 +40,11 @@ fn main() -> Result<()> {
         }
     }
 
-    println!("Processed {} files in {:?}, {} files failed to load", count, now.elapsed(), failed);
+    if failed > 0 {
+        println!("Processed {} files in {:?}, ({} failed)", count, now.elapsed(), failed);
+    } else {
+        println!("Processed {} files in {:?}", count, now.elapsed());
+    }
     
     Ok(())
 }
