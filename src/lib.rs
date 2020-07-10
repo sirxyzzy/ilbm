@@ -149,7 +149,7 @@ struct ColorMap {
 struct RowIter<'a> {
     raw_data: &'a [u8],
     width: usize,
-    compressed: bool, 
+    compressed: bool,
 }
 
 impl<'a> RowIter<'a> {
@@ -205,6 +205,7 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
                     match &sub_chunk.id().0 {
                         b"BMHD" => { 
                             read_bitmap_header(sub_chunk, &mut image)?;
+                            debug!("after header {}", image);
                             got_header = true;
                         }
 
@@ -299,6 +300,7 @@ fn read_color_map(chunk: IffChunk) -> Result<ColorMap> {
 }
 
 fn read_body(chunk: IffChunk, mode:DisplayMode, map: Option<ColorMap>, image: &mut IlbmImage) -> Result<()> {
+    debug!("{}", image);
     match map {
         Some(map) => read_body_with_cmap(chunk, mode, map, image),
         None => read_body_no_map(chunk, mode, image)
@@ -565,13 +567,15 @@ pub fn unpacker(input: &[u8], byte_width: usize) -> Result<(&[u8], Vec<u8>)> {
     let mut unpacked: Vec<u8> = Vec::with_capacity(byte_width);
 
     while unpacked.len() < byte_width {
-        let n = data.get_i8()?;
+        let n = data.get_i8()? as i16;       
+
         if n >= 0 {
             for _i in 0..(n+1) {
                 unpacked.push(data.get_u8()?);
             }
         } else if n != -128 {
             let b = data.get_u8()?;
+
             for _i in 0..(-n + 1) {
                 unpacked.push(b);
             }

@@ -61,7 +61,7 @@ fn args_to_file_list() -> Result<Vec<PathBuf>> {
 /// Recursively gather all files...
 fn get_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     if path.is_file() {
-        files.push(path.to_path_buf());
+        add_file(path.to_path_buf(), files);
     } else if path.is_dir() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -69,11 +69,24 @@ fn get_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
             if path_buf.is_dir() {
                 get_files(&path_buf, files)?;
             } else {
-                files.push(path_buf);
+                add_file(path_buf, files);
             }
         }
     } else {
         debug!("{} is not a file or folder, skipping!", path.to_string_lossy());
     }
     Ok(())
+}
+
+fn add_file(path: PathBuf, files: &mut Vec<PathBuf>) {
+    let name = path.file_name().unwrap().to_string_lossy().to_lowercase();
+
+    debug!("Got file '{}'", name);
+
+    if name.contains("read me") || name.contains("readme") || name.ends_with(".txt") || name.ends_with(".info") {
+        debug!("Skipping {}", path.to_string_lossy());
+        return;
+    }
+
+    files.push(path.to_path_buf());
 }

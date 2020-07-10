@@ -78,6 +78,8 @@ impl<R: BufRead> Iterator for IffReader<R> {
             if self.reader.read_exact(&mut dummy).is_err() {
                 return None;
             }
+
+            self.position += 1;
         }
 
         let mut id = [0u8; 4];
