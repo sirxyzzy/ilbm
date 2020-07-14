@@ -54,11 +54,8 @@ fn main() -> Result<()> {
         let name = path.to_string_lossy();
         info!("Loading {}", name);
 
-        let image_result = if opts.pixels {
-            ilbm::read_from_file( &path)
-        } else {
-            ilbm::read_from_file_no_pixels( &path)
-        };
+        let image_result = 
+            ilbm::read_from_file( &path, ilbm::ReadOptions{ read_pixels: opts.pixels, page_scale: true});
 
         match image_result {
             Ok(image) => println!("{} {}", image, name),

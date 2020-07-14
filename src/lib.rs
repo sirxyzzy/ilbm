@@ -12,12 +12,13 @@ use bytes::BigEndian;
 use std::path::{Path};
 use std::backtrace::Backtrace;
 
-pub fn read_from_file<P: AsRef<Path>>(file: P) -> Result<IlbmImage> {
-    read_from_file_impl(file, true)
+pub struct ReadOptions {
+    pub read_pixels: bool,
+    pub page_scale: bool,
 }
 
-pub fn read_from_file_no_pixels<P: AsRef<Path>>(file: P) -> Result<IlbmImage> {
-    read_from_file_impl(file, false)
+pub fn read_from_file<P: AsRef<Path>>(file: P, options: ReadOptions) -> Result<IlbmImage> {
+    read_from_file_impl(file, options)
 }
 
 /// Custom errors for ilbm library
@@ -199,7 +200,7 @@ impl<'a>  Iterator for RowIter<'a>  {
     }
 }
 
-fn read_from_file_impl<P: AsRef<Path>>(path: P, read_image_data: bool) -> Result<IlbmImage> {
+fn read_from_file_impl<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmImage> {
     // let file = File::open(&path)?;
     // let reader = IffReader::new(BufReader::new(file));
     let all_bytes = std::fs::read(path)?;
@@ -257,8 +258,32 @@ fn read_from_file_impl<P: AsRef<Path>>(path: P, read_image_data: bool) -> Result
                                 return Err(IlbmError::NoHeader)
                             }
 
-                            if read_image_data {
+                            if options.read_pixels {
                                 read_body(sub_chunk, image.display_mode, map, &mut image)?;
+                            }
+
+                            if options.page_scale {
+                                if image.page_size.width() < image.page_size.height() {
+                                    debug!("Scaling image to suit modern screen aspect ratios!");
+                                    // Only the Amiga messes with page sizes where
+                                    // the width is so much less that the height,
+                                    // if we get it, double all pixels
+                                    let old = &image.pixels; 
+                                    let mut new = Vec::<u8>::with_capacity(image.pixels.len() * 2);
+
+                                    // iterate over the old pixels
+                                    for i in (0..old.len()).step_by(3) {
+                                        new.push(old[i]);
+                                        new.push(old[i+1]);
+                                        new.push(old[i+2]);
+                                        new.push(old[i]);
+                                        new.push(old[i+1]);
+                                        new.push(old[i+2]);
+                                    }
+
+                                    image.pixels = new;
+                                    image.size.0 *= 2;
+                                }
                             }
 
                             return Ok(image)
