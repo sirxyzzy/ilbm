@@ -1,19 +1,28 @@
 #![feature(bufreader_seek_relative)]
+#![feature(backtrace)]
 
 #[macro_use]
 extern crate log;
 pub mod iff;
 mod bytes;
 
-use std::fs::File;
 use iff::{IffReader, IffChunk, ChunkId};
-use std::io::BufReader;
 use thiserror::Error;
 use bytes::BigEndian;
+use std::path::{Path};
+use std::backtrace::Backtrace;
+
+pub fn read_from_file<P: AsRef<Path>>(file: P) -> Result<IlbmImage> {
+    read_from_file_impl(file, true)
+}
+
+pub fn read_from_file_no_pixels<P: AsRef<Path>>(file: P) -> Result<IlbmImage> {
+    read_from_file_impl(file, false)
+}
 
 /// Custom errors for ilbm library
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum IlbmError {
     #[error("invalid header (expected {expected:?}, found {actual:?})")]
     InvalidHeader {
         expected: String,
@@ -42,10 +51,17 @@ pub enum Error {
 
     #[error("{0} not supported")]
     NotSupported(String),
+
+    #[error("IO Error")]
+    Io {
+        #[from]
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
 }
 
 /// Standardize my result Errors
-pub type Result<T> = std::result::Result<T,Error>;
+pub type Result<T> = std::result::Result<T,IlbmError>;
 
 #[derive(Debug,Clone,Copy, PartialEq)]
 pub enum Masking {
@@ -94,7 +110,7 @@ pub struct RgbValue (u8, u8, u8);
 
 /// This is an amalgam of information drawn from
 /// various chunks in the ILBM, mapped to more native
-/// types such as usize for u16
+/// types such as usize for u16, and enums for masking
 #[derive(Debug, Default)]
 pub struct IlbmImage {
     pub form_type: ChunkId,
@@ -183,8 +199,11 @@ impl<'a>  Iterator for RowIter<'a>  {
     }
 }
 
-pub fn read_from_file(file: File) -> Result<IlbmImage> {
-    let reader = IffReader::new(BufReader::new(file));
+fn read_from_file_impl<P: AsRef<Path>>(path: P, read_image_data: bool) -> Result<IlbmImage> {
+    // let file = File::open(&path)?;
+    // let reader = IffReader::new(BufReader::new(file));
+    let all_bytes = std::fs::read(path)?;
+    let reader = IffReader::new(std::io::Cursor::new(all_bytes));
 
     for chunk in reader {
         debug!("Chunk {}", chunk);
@@ -206,6 +225,9 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
                         b"BMHD" => { 
                             read_bitmap_header(sub_chunk, &mut image)?;
                             debug!("after header {}", image);
+                            if image.masking != Masking::NoMask {
+                                warn!("Image masking (transparency) not supported!");
+                            }
                             got_header = true;
                         }
 
@@ -229,13 +251,16 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
                         }
 
                         b"BODY" => {
-                            debug!("Got BODY!");
+                            debug!("Got BODY! {}", image);
 
                             if !got_header {
-                                return Err(Error::NoHeader)
+                                return Err(IlbmError::NoHeader)
                             }
 
-                            read_body(sub_chunk, image.display_mode, map, &mut image)?;
+                            if read_image_data {
+                                read_body(sub_chunk, image.display_mode, map, &mut image)?;
+                            }
+
                             return Ok(image)
                         }
 
@@ -249,7 +274,7 @@ pub fn read_from_file(file: File) -> Result<IlbmImage> {
         }
     }
 
-    Err(Error::NoImage)
+    Err(IlbmError::NoImage)
 }
 
 fn read_dpi(chunk: IffChunk) -> Result<Size2D> {
@@ -303,21 +328,17 @@ fn read_body(chunk: IffChunk, mode:DisplayMode, map: Option<ColorMap>, image: &m
     debug!("{}", image);
     match map {
         Some(map) => read_body_with_cmap(chunk, mode, map, image),
-        None => read_body_no_map(chunk, mode, image)
+        None => read_body_no_map(chunk, image)
     }
 }
 
-/// Read a body with no color map, so HAM (6 planes) or deep (24 or 32)
-fn read_body_no_map(_chunk: IffChunk, _mode:DisplayMode, _image: &mut IlbmImage) -> Result<()> {
-    Err(Error::NotSupported("deep mode".to_string()))
-}
 
 /// Read a body using a color map, pixel data is interpreted as indexes into the map  
 fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, image: &mut IlbmImage) -> Result<()> {
     // Having a CMAP implies certain limitations, here we limit color indices to a u8
     // so the number of planes cannot exceed 8 (bits) and the map must be big enough
     if image.planes > 8 {
-        return Err(Error::NotSupported("Color map with more than 8 planes".to_string()));
+        return Err(IlbmError::NotSupported("Color map with more than 8 planes".to_string()));
     }
 
     let Size2D(width, height) = image.size;
@@ -332,14 +353,17 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
     let mut pixels= Vec::<u8>::with_capacity(3 * width * height);
 
     for _row in 0..height {
+        // This is the row data we are trying to assemble from planes, an array of bytes
         let mut row= vec![0u8;width];
+
+        // Each plane gives us one bit, this one
         let mut plane_bit: u8 = 1;
-        for _plane in 0..planes {
-            let row_data = rows.next().ok_or(Error::NoData)?;
+        for _plane_number in 0..planes {
+            let plane_data = rows.next().ok_or(IlbmError::NoData)?;
 
             // Read planes, each plane contributes 1 bit
 
-            for (offset, byte) in row_data.iter().enumerate() {
+            for (offset, byte) in plane_data.iter().enumerate() {
                 let mut plane_byte = *byte;
 
                 for b in 0..8 {
@@ -357,7 +381,7 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
                 }
             }
 
-            // planes start at the low bit, so shift left the bit we or into the result
+            // planes start at the low bit, so shift left the bit we plan to set next
             plane_bit <<= 1; 
         }
 
@@ -366,7 +390,7 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
             // need to go RGBA to do so
             
             // get the next row
-            let _row_data = rows.next().ok_or(Error::NoData)?;          
+            let _row_data = rows.next().ok_or(IlbmError::NoData)?;          
         }
 
         if mode.is_ham() {
@@ -379,9 +403,84 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
     }
 
     assert_eq!(pixels.len(), 3 * width * height);
-
     image.pixels = pixels;
+    Ok(())
+}
 
+/// Read a body with no color map, so HAM (6 planes) or deep (24 or 32)
+fn read_body_no_map(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
+
+    // Having no CMAP means we support up to 32 planes (although 24 is more common)
+    // so we build planes into a single u32 
+    if image.planes > 32 {
+        return Err(IlbmError::NotSupported("Too many plans for deep color!".to_string()));
+    }
+
+    let Size2D(width, height) = image.size;
+    let planes = image.planes;
+
+    // Bytes per row (always EVEN)
+    let row_stride = ((width + 15)/16) * 2;
+
+    let mut rows = RowIter::new(chunk.data(), row_stride, image.compression);
+
+    // We assemble all the resolved RGB values in here
+    let mut pixels= Vec::<u8>::with_capacity(3 * width * height);
+
+    for _row in 0..height {
+        // This is the row data we are trying to assemble from planes, an array of 32 bit values we will interpret as RGB
+        let mut row= vec![0u32;width];
+
+        // Each plane gives us one bit, this one
+        let mut plane_bit: u32 = 1;
+        for _plane_number in 0..planes {
+            let plane_data = rows.next().ok_or(IlbmError::NoData)?;
+
+            // Read planes, each plane contributes 1 bit
+
+            for (offset, byte) in plane_data.iter().enumerate() {
+                let mut plane_byte = *byte;
+
+                for b in 0..8 {
+                    if plane_byte & 0x80 != 0 {
+                        let index = (offset * 8) + b;
+
+                        // Check width, because of padding and rounding, we may
+                        //  have more data than the width dictates
+                        if index < width {
+                            // Bit is on, so set the bit, corresponding with the plane, in the row data
+                            row[index] |= plane_bit;
+                        }
+                    }
+                    plane_byte <<= 1;
+                }
+            }
+
+            // planes start at the low bit, so shift left the bit we plan to set next
+            plane_bit <<= 1; 
+        }
+
+        if image.masking == Masking::HasMask {
+            // Read mask plane, we don't support this yet,
+            // need to go RGBA to do so
+            
+            // get the next row
+            let _row_data = rows.next().ok_or(IlbmError::NoData)?;          
+        }
+
+        // Resolve without color map
+        for p in row {
+            let rgb = p.to_be_bytes();
+
+            // No color map, use value as is, ignore top byte, if it's there, it's alpha
+            pixels.push(rgb[3]);
+            pixels.push(rgb[2]);
+            pixels.push(rgb[1]);
+        }
+    }
+
+    assert_eq!(pixels.len(), 3 * width * height);
+    image.pixels = pixels;   
     Ok(())
 }
 
@@ -393,7 +492,7 @@ fn push_row_bytes(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> R
         let map_size = color_map.colors.len();
 
         if index >= map_size  {
-            return Err(Error::NoMapEntry{index, map_size})
+            return Err(IlbmError::NoMapEntry{index, map_size})
         }
 
         let rgb = color_map.colors[index];
@@ -424,7 +523,7 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
 
     // Make sure we have at least a border color, I don't want to panic
     if map_size == 0 {
-        return Err(Error::NoMapEntry{index:0, map_size})
+        return Err(IlbmError::NoMapEntry{index:0, map_size})
     }
     
     // If we modify at the start of the row, we modify the so called border color
@@ -442,7 +541,7 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
             0 => {
                 // Index as normal using low order bits
                 if low_bits >= map_size  {
-                    return Err(Error::NoMapEntry{index:low_bits, map_size})
+                    return Err(IlbmError::NoMapEntry{index:low_bits, map_size})
                 }  
                 
                 // Just use the color in the map, no "modify"
@@ -498,7 +597,7 @@ fn push_row_bytes_halfbrite(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec
         let map_size = color_map.colors.len();
 
         if index >= map_size  {
-            return Err(Error::NoMapEntry{index, map_size})
+            return Err(IlbmError::NoMapEntry{index, map_size})
         }
 
         let rgb = color_map.colors[index];
@@ -540,14 +639,14 @@ fn read_bitmap_header(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
 
     // Lets do some early validations of crazy
     if image.size.0 == 0 || image.size.1 == 0 {
-        return Err(Error::InvalidHeader{ 
+        return Err(IlbmError::InvalidHeader{ 
             expected: "non-zero height and width".to_string(),
             actual: format!("{}", image.size)
         });
     }
 
     if image.planes == 0 {
-        return Err(Error::NoPlanes);
+        return Err(IlbmError::NoPlanes);
     }
 
     Ok(())
@@ -583,7 +682,7 @@ pub fn unpacker(input: &[u8], byte_width: usize) -> Result<(&[u8], Vec<u8>)> {
     }
 
     if unpacked.len() != byte_width {
-        Err(Error::InvalidData(format!("decompression unpacked too many bytes, expected {} but got {}", byte_width, unpacked.len())))
+        Err(IlbmError::InvalidData(format!("decompression unpacked too many bytes, expected {} but got {}", byte_width, unpacked.len())))
     } else {
         Ok((data, unpacked))
     }

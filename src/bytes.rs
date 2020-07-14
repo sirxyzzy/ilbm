@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::{IlbmError, Result};
 use std::convert::TryInto;
 
 //
@@ -20,7 +20,7 @@ pub trait BigEndian {
 impl BigEndian for &[u8] {
     fn get_u8(&mut self) -> Result<u8>   {
         if self.len() < std::mem::size_of::<u8>() {
-            return Err(Error::NoData);
+            return Err(IlbmError::NoData);
         }
 
         let (bytes, rest) = self.split_at(std::mem::size_of::<u8>());
@@ -32,7 +32,7 @@ impl BigEndian for &[u8] {
 
     fn get_i8(&mut self) -> Result<i8>   {
         if self.len() < std::mem::size_of::<i8>() {
-            return Err(Error::NoData);
+            return Err(IlbmError::NoData);
         }
 
         let (bytes, rest) = self.split_at(std::mem::size_of::<i8>());
@@ -44,7 +44,7 @@ impl BigEndian for &[u8] {
 
     fn get_u16(&mut self) -> Result<u16>   {
         if self.len() < std::mem::size_of::<u16>() {
-            return Err(Error::NoData);
+            return Err(IlbmError::NoData);
         }
     
         let (bytes, rest) = self.split_at(std::mem::size_of::<u16>());
@@ -56,7 +56,7 @@ impl BigEndian for &[u8] {
 
     fn get_i16(&mut self) -> Result<i16>   {
         if self.len() < std::mem::size_of::<i16>() {
-            return Err(Error::NoData);
+            return Err(IlbmError::NoData);
         }
     
         let (bytes, rest) = self.split_at(std::mem::size_of::<i16>());
@@ -68,7 +68,7 @@ impl BigEndian for &[u8] {
     
     fn get_u32(&mut self) -> Result<u32>   {
         if self.len() < std::mem::size_of::<u32>() {
-            return Err(Error::NoData);
+            return Err(IlbmError::NoData);
         }
     
         let (bytes, rest) = self.split_at(std::mem::size_of::<u32>());

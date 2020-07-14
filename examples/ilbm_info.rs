@@ -1,21 +1,45 @@
 #[macro_use]
 extern crate log;
 
+use argh::FromArgs;
 use anyhow::Result;
-use std::env;
-
-use std::fs::{self,File};
-
+use env_logger::{Builder};
+use log::LevelFilter;
 use std::path::{Path, PathBuf};
+use std::fs;
+
+
+#[derive(FromArgs)]
+/// Read the information from one or many ILBM image files
+struct Opts {
+    /// whether or not to show debug output
+    #[argh(switch, short = 'v')]
+    verbose: bool,
+
+    /// read pixels as well for a more complete check
+    #[argh(switch, short = 'p')]
+    pixels: bool,
+
+    #[argh(positional)]
+    files: Vec<String>,
+}
 
 fn main() -> Result<()> {
-    env_logger::builder()
+    let opts: Opts = argh::from_env();
+
+    let mut builder = Builder::from_default_env();
+
+    if opts.verbose {
+        builder.filter(None, LevelFilter::Debug);
+    }
+
+    builder
         .init();
 
     info!("starting up");
 
     // Get a list of files, parameters are either files, or folders
-    let files = args_to_file_list()?;
+    let files = all_files(&opts.files)?;
 
     if files.len() == 0 {
         anyhow::bail!("I need some files or folders!");
@@ -29,13 +53,18 @@ fn main() -> Result<()> {
         count += 1;
         let name = path.to_string_lossy();
         info!("Loading {}", name);
-        match ilbm::read_from_file( File::open(&path)?) {
-            Ok(image) => {
-                println!("{} {}", image, name);
-            }
+
+        let image_result = if opts.pixels {
+            ilbm::read_from_file( &path)
+        } else {
+            ilbm::read_from_file_no_pixels( &path)
+        };
+
+        match image_result {
+            Ok(image) => println!("{} {}", image, name),
             Err(e) => {
-                println!("ERROR! Failed to load {} {}", name, e);
                 failed += 1;
+                println!("ERROR! {} {}", e, name)
             }
         }
     }
@@ -50,9 +79,9 @@ fn main() -> Result<()> {
 }
 
 /// Take list or args, treat as files or folders and gather all
-fn args_to_file_list() -> Result<Vec<PathBuf>> {
+fn all_files(paths: &Vec<String>) -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = Vec::new();
-    for arg in env::args().skip(1) {
+    for arg in paths {
         get_files(&Path::new(&arg), &mut files)?;
     }
     Ok(files)

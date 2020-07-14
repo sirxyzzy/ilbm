@@ -59,7 +59,7 @@ fn main() -> Result<()> {
 fn load_and_show_image(path: &PathBuf, window: &Window) -> Result<()> {
     let name = path.to_string_lossy();
     println!("Loading {}", name);
-    let image = ilbm::read_from_file( File::open(&path)?)?;
+    let image = ilbm::read_from_file( &path)?;
     println!("{}", image);
 
 
