@@ -296,11 +296,13 @@ fn read_from_file_impl<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<
                             }
 
                             if options.page_scale {
+                                // This is a bit of a heuristic, but 
+                                // only the Amiga messes with page sizes where
+                                // the width is so much less that the height,
+                                // and in those cases the pixels are essentially double-wide
                                 if image.page_size.width() < image.page_size.height() {
                                     debug!("Scaling image to suit modern screen aspect ratios!");
-                                    // Only the Amiga messes with page sizes where
-                                    // the width is so much less that the height,
-                                    // if we get it, double all pixels
+
                                     let old = &image.pixels; 
                                     let mut new = Vec::<u8>::with_capacity(image.pixels.len() * 2);
 
