@@ -258,6 +258,10 @@ fn read_from_file_impl<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<
                                 return Err(IlbmError::NoHeader)
                             }
 
+                            if image.display_mode.is_halfbrite() && image.planes != 6 {
+                                return Err(IlbmError::NotSupported(format!("Halfbright only works with 6 planes, but I have {}", image.planes)));
+                            }
+
                             if options.read_pixels {
                                 read_body(sub_chunk, image.display_mode, map, &mut image)?;
                             }
@@ -599,7 +603,7 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
                 // RgbValue(prev_color.0, component, prev_color.2)
                 color.1 = component as u8;   
             }
-            _ => panic!("Logically, we cannot get here, as we only masked two bits, the compiler can't work that out!")
+            _ => unreachable!("Logically, we cannot get here, as we only have two bits")
         }
 
         pixels.push(color.0);
@@ -611,13 +615,18 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
 }
 
 /// HalfBrite is relatively simple, we need only half the colors in the color map,
-/// as one bit (the lowest in the index) tells us to simply half (darken) what the rest
+/// as one bit (from the last plane) tells us to simply half (darken) what the rest
 /// of the index tells us
 fn push_row_bytes_halfbrite(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> Result<()> {
     // Resolve through color map, and add to output vector, but use only half the map
     // darkening pixels in the upper half
+
+    // Note, we rely here on having 6 planes, we already validated that
+    let low_bits = 0x1f;
+    let half_bit = 0x20;
+
     for p in row {
-        let index = (p >> 1) as usize;
+        let index = (p & low_bits) as usize;
 
         let map_size = color_map.colors.len();
 
@@ -627,7 +636,7 @@ fn push_row_bytes_halfbrite(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec
 
         let rgb = color_map.colors[index];
 
-        if p & 1 != 0 {
+        if p & half_bit != 0 {
             // Half brightness
             pixels.push(rgb.0 >> 1);
             pixels.push(rgb.1 >> 1);
