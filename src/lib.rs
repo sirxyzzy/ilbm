@@ -12,11 +12,13 @@ use bytes::BigEndian;
 use std::path::{Path};
 use std::backtrace::Backtrace;
 
+/// Global settings when reading image files
 pub struct ReadOptions {
     pub read_pixels: bool,
     pub page_scale: bool,
 }
 
+/// Main entry point
 pub fn read_from_file<P: AsRef<Path>>(file: P, options: ReadOptions) -> Result<IlbmImage> {
     read_from_file_impl(file, options)
 }
@@ -96,7 +98,15 @@ pub struct DisplayMode (u32);
 
 impl DisplayMode {
     pub fn is_ham(&self) -> bool {self.0 & 0x800 != 0} 
-    pub fn is_halfbrite(&self) -> bool {self.0 & 0x80 != 0} 
+    pub fn is_halfbrite(&self) -> bool {self.0 & 0x80 != 0}
+
+    pub fn new(mode: u32) -> DisplayMode {
+        DisplayMode(mode)
+    }
+    
+    pub fn ham() -> DisplayMode {
+        DisplayMode(0x800)
+    }
 }
 
 impl std::fmt::Display for DisplayMode {
@@ -175,6 +185,7 @@ impl<'a> RowIter<'a> {
     }
 }
 
+/// An iterator for image rows, that can decompress on the fly
 impl<'a>  Iterator for RowIter<'a>  {
     type Item = Vec<u8>;
     fn next(&mut self) -> std::option::Option<<Self as std::iter::Iterator>::Item> {
@@ -201,22 +212,24 @@ impl<'a>  Iterator for RowIter<'a>  {
 }
 
 fn read_from_file_impl<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmImage> {
-    // let file = File::open(&path)?;
-    // let reader = IffReader::new(BufReader::new(file));
+    // We choose to buffer the entire file, it is quite a bit faster,
+    // and Amiga image files tend to be small anyway
     let all_bytes = std::fs::read(path)?;
     let reader = IffReader::new(std::io::Cursor::new(all_bytes));
 
     for chunk in reader {
         debug!("Chunk {}", chunk);
 
+        // We only look at forms, they encapsulate several sub-chunks
         if chunk.is_form() {
             let is_ilbm = &chunk.form_type() == b"ILBM";
-            let is_pbm = &chunk.form_type() == b"PBM ";
-            if  is_ilbm || is_pbm {
+
+            if is_ilbm {
                 let mut image = IlbmImage{ form_type: chunk.form_type(), ..Default::default() };
 
                 let mut map: Option<ColorMap> = None;
                 let mut got_header = false;
+                let mut got_camg = false;
 
                 for sub_chunk in chunk.sub_chunks() {
 
@@ -242,6 +255,7 @@ fn read_from_file_impl<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<
                         b"CAMG" => {
                             let mode = read_display_mode(sub_chunk)?;
                             debug!("Got display mode: {}", mode);
+                            got_camg = true;
                             image.display_mode = mode;
                         }
 
@@ -257,6 +271,15 @@ fn read_from_file_impl<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<
                             if !got_header {
                                 return Err(IlbmError::NoHeader)
                             }
+
+                            // Reportedly, some HAM6 files are missing the CAMG chunk. 
+                            // A file with no CAMG chunk, 6 bit planes, and 16 palette colors assumed to be HAM6
+                            if !got_camg && image.planes == 6 && image.map_size == 16 {
+                                // force on HAM
+                                warn!("Looks like HAM6, but  didn't get a CAMG, forcing HAM");
+                                image.display_mode = DisplayMode::ham();
+                            }
+
 
                             if image.display_mode.is_halfbrite() && image.planes != 6 {
                                 return Err(IlbmError::NotSupported(format!("Halfbright only works with 6 planes, but I have {}", image.planes)));
@@ -314,7 +337,7 @@ fn read_dpi(chunk: IffChunk) -> Result<Size2D> {
 }
 
 fn read_display_mode(chunk: IffChunk) -> Result<DisplayMode> {
-    Ok(DisplayMode(chunk.data().get_u32()?))
+    Ok(DisplayMode::new(chunk.data().get_u32()?))
 }
 
 fn read_color_map(chunk: IffChunk) -> Result<ColorMap> {
@@ -687,6 +710,7 @@ fn read_bitmap_header(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
 }
 
 // UnPacker:
+// Pseudo-code per spec
 //   LOOP until produced the desired number of bytes
 //       Read the next source byte into n
 //       SELECT n FROM
