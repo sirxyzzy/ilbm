@@ -92,7 +92,8 @@ fn as_masking(v: u8) -> Masking {
 }
 
 /// Display mode, aka ModeID is Amiga specific, and quite complex
-/// in terms of interpretation. It comes from the CAMG chunk 
+/// in terms of interpretation. However, our usage is pretty trivial
+// It comes from the CAMG chunk 
 #[derive(Copy, Debug, Clone, Default)]
 pub struct DisplayMode (u32);
 
@@ -111,8 +112,13 @@ impl DisplayMode {
 
 impl std::fmt::Display for DisplayMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-        let mode_type = if self.is_ham() { "HAM" } else if self.is_halfbrite() { "HALF" } else {""};
-        write!(f, "0x{:X} {}", self.0, mode_type) 
+        if self.is_ham() { 
+            write!(f, "0x{:X} HAM", self.0)
+        } else if self.is_halfbrite() { 
+            write!(f, "0x{:X} HALF", self.0) 
+        } else {
+            write!(f, "0x{:X}", self.0)
+        }
     }
 }
 
