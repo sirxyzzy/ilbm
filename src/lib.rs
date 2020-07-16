@@ -1,5 +1,5 @@
-#![feature(bufreader_seek_relative)]
-#![feature(backtrace)]
+// #![feature(bufreader_seek_relative)]
+// #![feature(backtrace)]
 
 #[macro_use]
 extern crate log;
@@ -10,7 +10,6 @@ use iff::{IffReader, IffChunk, ChunkId};
 use thiserror::Error;
 use bytes::BigEndian;
 use std::path::{Path};
-use std::backtrace::Backtrace;
 
 /// Global settings when reading image files
 pub struct ReadOptions {
@@ -58,8 +57,7 @@ pub enum IlbmError {
     #[error("IO Error")]
     Io {
         #[from]
-        source: std::io::Error,
-        backtrace: Backtrace,
+        source: std::io::Error
     },
 }
 
