@@ -64,8 +64,6 @@ pub fn read_file<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmIm
 
                 for sub_chunk in chunk.sub_chunks() {
 
-                    image.chunk_types.push(sub_chunk.id());
-
                     match &sub_chunk.id().0 {
                         b"BMHD" => { 
                             read_bitmap_header(sub_chunk, &mut image)?;

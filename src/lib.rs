@@ -129,7 +129,6 @@ pub struct IlbmImage {
     pub form_type: ChunkId,
     pub size: Size2D,
     pub map_size: usize,
-    pub chunk_types: Vec<ChunkId>,
     pub planes: usize,
     pub masking: Masking,
     pub compression: bool,
