@@ -1,16 +1,17 @@
 use std::io::Cursor;
 use std::fmt;
-use std::convert::TryInto;
 use std::io::prelude::*;
 
-#[derive(PartialEq, Copy, Clone, Debug)]
+const FORM: ChunkId = ChunkId::new(b"FORM");
+
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub struct ChunkId (
-    pub [u8;4]
+    [u8;4]
 );
 
-impl PartialEq<[u8;4]> for ChunkId {
-    fn eq(&self, other: &[u8;4]) -> bool {
-        self.0 == *other
+impl ChunkId {
+    pub const fn new(id: &[u8;4]) -> ChunkId {
+        ChunkId(*id)
     }
 }
 
@@ -43,14 +44,11 @@ pub struct IffChunk {
 impl IffChunk {
     pub fn id(&self) -> ChunkId { self.ck_id }
     pub fn data(&self) -> &[u8] { &self.data }
-    pub fn is_form(&self) -> bool { &self.ck_id == b"FORM" }
-    pub fn form_type(&self) -> ChunkId { 
-        if self.is_form() && self.data.len() >= 4 {
-            // Since we validated the length, we can safely unwrap here
-            ChunkId(self.data[..4].try_into().unwrap())
-        } else {
-            panic!("Ouch, where is my form type!");
-        }
+    pub fn is_form(&self) -> bool { 
+        self.ck_id == FORM  
+    }
+    pub fn is_form_type(&self, form_type:&[u8;4]) -> bool { 
+        self.is_form() && self.data.len() >= 4 && form_type == &self.data[..4]  
     }
     pub fn sub_chunks(&self) -> IffReader<Cursor<&[u8]>> {
          IffReader::new( Cursor::new(&self.data[4..]))
@@ -60,7 +58,7 @@ impl IffChunk {
 impl fmt::Display for IffChunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_form() && self.data.len() >= 4 {
-            write!(f, "FORM Chunk {}, length {}", self.form_type(), self.data.len())
+            write!(f, "FORM Chunk {}, length {}", String::from_utf8_lossy(&self.data[..4]), self.data.len())
         } else {
             write!(f, "{} Chunk, length {}", self.ck_id, self.data.len())
         }

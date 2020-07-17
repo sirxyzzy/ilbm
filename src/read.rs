@@ -4,6 +4,14 @@ use crate::*;
 use crate::bytes::BigEndian;
 use crate::iff::{IffReader, IffChunk};
 
+/// IFF files contain chunks identified by 4 byte ids
+/// These are some we recognize within ILBM form chunks
+const BMHD: ChunkId = ChunkId::new(b"BMHD");
+const CMAP: ChunkId = ChunkId::new(b"CMAP");
+const CAMG: ChunkId = ChunkId::new(b"CAMG");
+const DPI: ChunkId = ChunkId::new(b"DPI ");
+const BODY: ChunkId = ChunkId::new(b"BODY");
+
 struct RowIter<'a> {
     raw_data: &'a [u8],
     width: usize,
@@ -51,106 +59,102 @@ pub fn read_file<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmIm
     for chunk in reader {
         debug!("Chunk {}", chunk);
 
-        // We only look at forms, they encapsulate several sub-chunks
-        if chunk.is_form() {
-            let is_ilbm = &chunk.form_type() == b"ILBM";
+        // We only look at forms of type ILBM, they encapsulate several sub-chunks
+        if chunk.is_form_type(b"ILBM") {
+            let mut image = IlbmImage::default();
 
-            if is_ilbm {
-                let mut image = IlbmImage{ form_type: chunk.form_type(), ..Default::default() };
+            let mut map: Option<ColorMap> = None;
+            let mut got_header = false;
+            let mut got_camg = false;
 
-                let mut map: Option<ColorMap> = None;
-                let mut got_header = false;
-                let mut got_camg = false;
+            for sub_chunk in chunk.sub_chunks() {
 
-                for sub_chunk in chunk.sub_chunks() {
+                match sub_chunk.id() {
+                    BMHD => { 
+                        read_bitmap_header(sub_chunk, &mut image)?;
+                        debug!("after header {}", image);
+                        if image.masking != Masking::NoMask {
+                            warn!("Image masking (transparency) not supported!");
+                        }
+                        got_header = true;
+                    }
 
-                    match &sub_chunk.id().0 {
-                        b"BMHD" => { 
-                            read_bitmap_header(sub_chunk, &mut image)?;
-                            debug!("after header {}", image);
-                            if image.masking != Masking::NoMask {
-                                warn!("Image masking (transparency) not supported!");
-                            }
-                            got_header = true;
+                    CMAP => {
+                        let m = read_color_map(sub_chunk)?;
+                        debug!("Got color map, of map_size {}", m.colors.len());
+                        image.map_size = m.colors.len();
+                        map = Some(m);
+                    }
+
+                    CAMG => {
+                        let mode = read_display_mode(sub_chunk)?;
+                        debug!("Got display mode: {}", mode);
+                        got_camg = true;
+                        image.display_mode = mode;
+                    }
+
+                    DPI => {
+                        let dpi = read_dpi(sub_chunk)?;
+                        debug!("Got dpi: {}", dpi);
+                        image.dpi = dpi;
+                    }
+
+                    BODY => {
+                        debug!("Got BODY! {}", image);
+
+                        if !got_header {
+                            return Err(IlbmError::NoHeader)
                         }
 
-                        b"CMAP" => {
-                            let m = read_color_map(sub_chunk)?;
-                            debug!("Got color map, of map_size {}", m.colors.len());
-                            image.map_size = m.colors.len();
-                            map = Some(m);
+                        // Reportedly, some HAM6 files are missing the CAMG chunk. 
+                        // A file with no CAMG chunk, 6 bit planes, and 16 palette colors assumed to be HAM6
+                        if !got_camg && image.planes == 6 && image.map_size == 16 {
+                            // force on HAM
+                            warn!("Looks like HAM6, but  didn't get a CAMG, forcing HAM");
+                            image.display_mode = DisplayMode::ham();
                         }
 
-                        b"CAMG" => {
-                            let mode = read_display_mode(sub_chunk)?;
-                            debug!("Got display mode: {}", mode);
-                            got_camg = true;
-                            image.display_mode = mode;
+
+                        if image.display_mode.is_halfbrite() && image.planes != 6 {
+                            return Err(IlbmError::NotSupported(format!("Halfbright only works with 6 planes, but I have {}", image.planes)));
                         }
 
-                        b"DPI " => {
-                            let dpi = read_dpi(sub_chunk)?;
-                            debug!("Got dpi: {}", dpi);
-                            image.dpi = dpi;
+                        if options.read_pixels {
+                            read_body(sub_chunk, image.display_mode, map, &mut image)?;
                         }
 
-                        b"BODY" => {
-                            debug!("Got BODY! {}", image);
+                        if options.page_scale {
+                            // This is a bit of a heuristic, but 
+                            // only the Amiga messes with page sizes where
+                            // the width is so much less that the height,
+                            // and in those cases the pixels are essentially double-wide
+                            if image.page_size.width() < image.page_size.height() {
+                                debug!("Scaling image to suit modern screen aspect ratios!");
 
-                            if !got_header {
-                                return Err(IlbmError::NoHeader)
-                            }
+                                let old = &image.pixels; 
+                                let mut new = Vec::<u8>::with_capacity(image.pixels.len() * 2);
 
-                            // Reportedly, some HAM6 files are missing the CAMG chunk. 
-                            // A file with no CAMG chunk, 6 bit planes, and 16 palette colors assumed to be HAM6
-                            if !got_camg && image.planes == 6 && image.map_size == 16 {
-                                // force on HAM
-                                warn!("Looks like HAM6, but  didn't get a CAMG, forcing HAM");
-                                image.display_mode = DisplayMode::ham();
-                            }
-
-
-                            if image.display_mode.is_halfbrite() && image.planes != 6 {
-                                return Err(IlbmError::NotSupported(format!("Halfbright only works with 6 planes, but I have {}", image.planes)));
-                            }
-
-                            if options.read_pixels {
-                                read_body(sub_chunk, image.display_mode, map, &mut image)?;
-                            }
-
-                            if options.page_scale {
-                                // This is a bit of a heuristic, but 
-                                // only the Amiga messes with page sizes where
-                                // the width is so much less that the height,
-                                // and in those cases the pixels are essentially double-wide
-                                if image.page_size.width() < image.page_size.height() {
-                                    debug!("Scaling image to suit modern screen aspect ratios!");
-
-                                    let old = &image.pixels; 
-                                    let mut new = Vec::<u8>::with_capacity(image.pixels.len() * 2);
-
-                                    // iterate over the old pixels
-                                    for i in (0..old.len()).step_by(3) {
-                                        new.push(old[i]);
-                                        new.push(old[i+1]);
-                                        new.push(old[i+2]);
-                                        new.push(old[i]);
-                                        new.push(old[i+1]);
-                                        new.push(old[i+2]);
-                                    }
-
-                                    image.pixels = new;
-                                    image.size.0 *= 2;
+                                // iterate over the old pixels
+                                for i in (0..old.len()).step_by(3) {
+                                    new.push(old[i]);
+                                    new.push(old[i+1]);
+                                    new.push(old[i+2]);
+                                    new.push(old[i]);
+                                    new.push(old[i+1]);
+                                    new.push(old[i+2]);
                                 }
+
+                                image.pixels = new;
+                                image.size.0 *= 2;
                             }
-
-                            return Ok(image)
                         }
 
-                        _ => {
-                            debug!("Skipping sub chunk {}", sub_chunk.id());
-                            continue;
-                        }
+                        return Ok(image)
+                    }
+
+                    _ => {
+                        debug!("Skipping sub chunk {}", sub_chunk.id());
+                        continue;
                     }
                 }
             }

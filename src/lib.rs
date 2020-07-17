@@ -126,7 +126,6 @@ pub struct RgbValue (u8, u8, u8);
 /// types such as usize for u16, and enums for masking
 #[derive(Debug, Default)]
 pub struct IlbmImage {
-    pub form_type: ChunkId,
     pub size: Size2D,
     pub map_size: usize,
     pub planes: usize,
@@ -148,8 +147,8 @@ pub struct IlbmImage {
 impl std::fmt::Display for IlbmImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
         let compressed = if self.compression { "Comp" } else { "" };
-        write!(f, "{} {} dpi:{} p:{} {} {:?} map:{} mode:{} aspect:{} trans:{} page:{}",
-        self.form_type, self.size, self.dpi, self.planes,
+        write!(f, "{} dpi:{} p:{} {} {:?} map:{} mode:{} aspect:{} trans:{} page:{}",
+        self.size, self.dpi, self.planes,
         compressed, self.masking, self.map_size, self.display_mode, 
         self.pixel_aspect, self.transparent_color, self.page_size)
     }
