@@ -22,7 +22,7 @@ impl fmt::Display for ChunkId {
 }
 
 impl Default for ChunkId {
-    fn default() -> Self { ChunkId([63;4]) } // b"????"
+    fn default() -> Self { ChunkId::new(b"????") }
 }
 
 pub struct IffReader<R> {
