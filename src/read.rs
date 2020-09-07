@@ -1,8 +1,8 @@
-use std::path::Path;
-use crate::compression;
-use crate::*;
 use crate::bytes::BigEndian;
-use crate::iff::{IffReader, IffChunk};
+use crate::compression;
+use crate::iff::{IffChunk, IffReader};
+use crate::*;
+use std::path::Path;
 
 /// IFF files contain chunks identified by 4 byte ids
 /// These are some we recognize within ILBM form chunks
@@ -20,12 +20,16 @@ struct RowIter<'a> {
 
 impl<'a> RowIter<'a> {
     fn new(raw_data: &[u8], width: usize, compressed: bool) -> RowIter {
-        RowIter{raw_data, width, compressed}
+        RowIter {
+            raw_data,
+            width,
+            compressed,
+        }
     }
 }
 
 /// An iterator for image rows, that can decompress on the fly
-impl<'a>  Iterator for RowIter<'a>  {
+impl<'a> Iterator for RowIter<'a> {
     type Item = Vec<u8>;
     fn next(&mut self) -> std::option::Option<<Self as std::iter::Iterator>::Item> {
         if self.compressed {
@@ -33,8 +37,8 @@ impl<'a>  Iterator for RowIter<'a>  {
                 Ok((remaining, row)) => {
                     self.raw_data = remaining;
                     Some(row)
-                },
-                Err(_) => None
+                }
+                Err(_) => None,
             }
         } else {
             // Uncompressed...
@@ -68,9 +72,8 @@ pub fn read_file<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmIm
             let mut got_camg = false;
 
             for sub_chunk in chunk.sub_chunks() {
-
                 match sub_chunk.id() {
-                    BMHD => { 
+                    BMHD => {
                         read_bitmap_header(sub_chunk, &mut image)?;
                         debug!("after header {}", image);
                         if image.masking != Masking::NoMask {
@@ -103,20 +106,22 @@ pub fn read_file<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmIm
                         debug!("Got BODY! {}", image);
 
                         if !got_header {
-                            return Err(IlbmError::NoHeader)
+                            return Err(IlbmError::NoHeader);
                         }
 
-                        // Reportedly, some HAM6 files are missing the CAMG chunk. 
+                        // Reportedly, some HAM6 files are missing the CAMG chunk.
                         // A file with no CAMG chunk, 6 bit planes, and 16 palette colors assumed to be HAM6
                         if !got_camg && image.planes == 6 && image.map_size == 16 {
                             // force on HAM
-                            warn!("Looks like HAM6, but  didn't get a CAMG, forcing HAM");
+                            warn!("Looks like HAM6, but didn't get a CAMG, forcing HAM");
                             image.display_mode = DisplayMode::ham();
                         }
 
-
                         if image.display_mode.is_halfbrite() && image.planes != 6 {
-                            return Err(IlbmError::NotSupported(format!("Halfbright only works with 6 planes, but I have {}", image.planes)));
+                            return Err(IlbmError::NotSupported(format!(
+                                "Halfbright only works with 6 planes, but I have {}",
+                                image.planes
+                            )));
                         }
 
                         if options.read_pixels {
@@ -124,24 +129,24 @@ pub fn read_file<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmIm
                         }
 
                         if options.page_scale {
-                            // This is a bit of a heuristic, but 
+                            // This is a bit of a heuristic, but
                             // only the Amiga messes with page sizes where
                             // the width is so much less that the height,
                             // and in those cases the pixels are essentially double-wide
                             if image.page_size.width() < image.page_size.height() {
                                 debug!("Scaling image to suit modern screen aspect ratios!");
 
-                                let old = &image.pixels; 
+                                let old = &image.pixels;
                                 let mut new = Vec::<u8>::with_capacity(image.pixels.len() * 2);
 
                                 // iterate over the old pixels
                                 for i in (0..old.len()).step_by(3) {
                                     new.push(old[i]);
-                                    new.push(old[i+1]);
-                                    new.push(old[i+2]);
+                                    new.push(old[i + 1]);
+                                    new.push(old[i + 2]);
                                     new.push(old[i]);
-                                    new.push(old[i+1]);
-                                    new.push(old[i+2]);
+                                    new.push(old[i + 1]);
+                                    new.push(old[i + 2]);
                                 }
 
                                 image.pixels = new;
@@ -149,7 +154,7 @@ pub fn read_file<P: AsRef<Path>>(path: P, options: ReadOptions) -> Result<IlbmIm
                             }
                         }
 
-                        return Ok(image)
+                        return Ok(image);
                     }
 
                     _ => {
@@ -205,43 +210,60 @@ fn read_color_map(chunk: IffChunk) -> Result<ColorMap> {
     // This is where we fix up 4 bit color maps, if we need to
     if !found_low_bits {
         info!("Found old color map, fixing up!...");
-        colors.iter_mut().for_each(|color| *color = RgbValue(color.0 | (color.0 >> 4), color.1 | (color.1 >> 4), color.2 | (color.2 >> 4)));
+        colors.iter_mut().for_each(|color| {
+            *color = RgbValue(
+                color.0 | (color.0 >> 4),
+                color.1 | (color.1 >> 4),
+                color.2 | (color.2 >> 4),
+            )
+        });
     }
 
-    Ok(ColorMap{colors})
+    Ok(ColorMap { colors })
 }
 
-fn read_body(chunk: IffChunk, mode:DisplayMode, map: Option<ColorMap>, image: &mut IlbmImage) -> Result<()> {
+fn read_body(
+    chunk: IffChunk,
+    mode: DisplayMode,
+    map: Option<ColorMap>,
+    image: &mut IlbmImage,
+) -> Result<()> {
     debug!("{}", image);
     match map {
         Some(map) => read_body_with_cmap(chunk, mode, map, image),
-        None => read_body_no_map(chunk, image)
+        None => read_body_no_map(chunk, image),
     }
 }
 
-
 /// Read a body using a color map, pixel data is interpreted as indexes into the map  
-fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, image: &mut IlbmImage) -> Result<()> {
+fn read_body_with_cmap(
+    chunk: IffChunk,
+    mode: DisplayMode,
+    color_map: ColorMap,
+    image: &mut IlbmImage,
+) -> Result<()> {
     // Having a CMAP implies certain limitations, here we limit color indices to a u8
     // so the number of planes cannot exceed 8 (bits) and the map must be big enough
     if image.planes > 8 {
-        return Err(IlbmError::NotSupported("Color map with more than 8 planes".to_string()));
+        return Err(IlbmError::NotSupported(
+            "Color map with more than 8 planes".to_string(),
+        ));
     }
 
     let Size2D(width, height) = image.size;
     let planes = image.planes;
 
     // Bytes per row (always EVEN)
-    let row_stride = ((width + 15)/16) * 2;
+    let row_stride = ((width + 15) / 16) * 2;
 
     let mut rows = RowIter::new(chunk.data(), row_stride, image.compression);
 
     // We assemble all the resolved RGB values in here
-    let mut pixels= Vec::<u8>::with_capacity(3 * width * height);
+    let mut pixels = Vec::<u8>::with_capacity(3 * width * height);
 
     for _row in 0..height {
         // This is the row data we are trying to assemble from planes, an array of bytes
-        let mut row= vec![0u8;width];
+        let mut row = vec![0u8; width];
 
         // Each plane gives us one bit, this one
         let mut plane_bit: u8 = 1;
@@ -269,15 +291,15 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
             }
 
             // planes start at the low bit, so shift left the bit we plan to set next
-            plane_bit <<= 1; 
+            plane_bit <<= 1;
         }
 
         if image.masking == Masking::HasMask {
             // Read mask plane, we don't support this yet,
             // need to go RGBA to do so
-            
+
             // get the next row
-            let _row_data = rows.next().ok_or(IlbmError::NoData)?;          
+            let _row_data = rows.next().ok_or(IlbmError::NoData)?;
         }
 
         if mode.is_ham() {
@@ -296,27 +318,28 @@ fn read_body_with_cmap(chunk: IffChunk, mode:DisplayMode, color_map: ColorMap, i
 
 /// Read a body with no color map, so HAM (6 planes) or deep (24 or 32)
 fn read_body_no_map(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
-
     // Having no CMAP means we support up to 32 planes (although 24 is more common)
-    // so we build planes into a single u32 
+    // so we build planes into a single u32
     if image.planes > 32 {
-        return Err(IlbmError::NotSupported("Too many plans for deep color!".to_string()));
+        return Err(IlbmError::NotSupported(
+            "Too many plans for deep color!".to_string(),
+        ));
     }
 
     let Size2D(width, height) = image.size;
     let planes = image.planes;
 
     // Bytes per row (always EVEN)
-    let row_stride = ((width + 15)/16) * 2;
+    let row_stride = ((width + 15) / 16) * 2;
 
     let mut rows = RowIter::new(chunk.data(), row_stride, image.compression);
 
     // We assemble all the resolved RGB values in here
-    let mut pixels= Vec::<u8>::with_capacity(3 * width * height);
+    let mut pixels = Vec::<u8>::with_capacity(3 * width * height);
 
     for _row in 0..height {
         // This is the row data we are trying to assemble from planes, an array of 32 bit values we will interpret as RGB
-        let mut row= vec![0u32;width];
+        let mut row = vec![0u32; width];
 
         // Each plane gives us one bit, this one
         let mut plane_bit: u32 = 1;
@@ -344,15 +367,15 @@ fn read_body_no_map(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
             }
 
             // planes start at the low bit, so shift left the bit we plan to set next
-            plane_bit <<= 1; 
+            plane_bit <<= 1;
         }
 
         if image.masking == Masking::HasMask {
             // Read mask plane, we don't support this yet,
             // need to go RGBA to do so
-            
+
             // get the next row
-            let _row_data = rows.next().ok_or(IlbmError::NoData)?;          
+            let _row_data = rows.next().ok_or(IlbmError::NoData)?;
         }
 
         // Resolve without color map
@@ -367,7 +390,7 @@ fn read_body_no_map(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
     }
 
     assert_eq!(pixels.len(), 3 * width * height);
-    image.pixels = pixels;   
+    image.pixels = pixels;
     Ok(())
 }
 
@@ -378,8 +401,8 @@ fn push_row_bytes(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> R
         let index = p as usize;
         let map_size = color_map.colors.len();
 
-        if index >= map_size  {
-            return Err(IlbmError::NoMapEntry{index, map_size})
+        if index >= map_size {
+            return Err(IlbmError::NoMapEntry { index, map_size });
         }
 
         let rgb = color_map.colors[index];
@@ -395,7 +418,12 @@ fn push_row_bytes(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> R
 /// HAM is tricky, it works by reserving two planes (hence two bits) to indicate
 /// whether we index as normal (using planes-2 bits) or if we take those low order
 // bits to modify the PREVIOUS value
-fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels: &mut Vec<u8>) -> Result<()> {
+fn push_row_bytes_ham(
+    row: Vec<u8>,
+    planes: usize,
+    color_map: &ColorMap,
+    pixels: &mut Vec<u8>,
+) -> Result<()> {
     // Resolve through color map, and add to output vector
     let map_size = color_map.colors.len();
 
@@ -406,31 +434,34 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
 
     // The modify color needs to be shifted back, as generally is is less than 8 bits long
     // but we always render to 8 bit components
-    let mod_color_shift = 8 - mod_shift; // Left shift applied to color when modifying 
+    let mod_color_shift = 8 - mod_shift; // Left shift applied to color when modifying
 
     // Make sure we have at least a border color, I don't want to panic
     if map_size == 0 {
-        return Err(IlbmError::NoMapEntry{index:0, map_size})
+        return Err(IlbmError::NoMapEntry { index: 0, map_size });
     }
-    
+
     // If we modify at the start of the row, we modify the so called border color
     let mut color = color_map.colors[0];
 
     for p in row {
         let row_val = p as usize;
-        let mod_bits = row_val >> mod_shift;  // After this shift, low order mod_bits indicate whether we modify
-        let low_bits = row_val & index_mask;  // Mask off the mod bits for just the actual index (if used)
- 
+        let mod_bits = row_val >> mod_shift; // After this shift, low order mod_bits indicate whether we modify
+        let low_bits = row_val & index_mask; // Mask off the mod bits for just the actual index (if used)
+
         // Based on the mod bits, either replace the color
         // with one in the color map, or modify one component
         // of the previous color
         match mod_bits {
             0 => {
                 // Index as normal using low order bits
-                if low_bits >= map_size  {
-                    return Err(IlbmError::NoMapEntry{index:low_bits, map_size})
-                }  
-                
+                if low_bits >= map_size {
+                    return Err(IlbmError::NoMapEntry {
+                        index: low_bits,
+                        map_size,
+                    });
+                }
+
                 // Just use the color in the map, no "modify"
                 color = color_map.colors[low_bits]
             }
@@ -441,7 +472,7 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
                 // Sadly, that shifted zeros into the low end, so we would never reach peak intensity
                 // we fix that up by grabbing the appropriate number of bits from the high end and
                 // or-ing back to the low end
-                component |= component >> (8-mod_color_shift);
+                component |= component >> (8 - mod_color_shift);
 
                 // Based on the mod_bits, modify the corresponding component
                 // RgbValue(component, prev_color.1, prev_color.2)
@@ -450,18 +481,18 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
             1 => {
                 // Modify BLUE in previous
                 let mut component = low_bits << mod_color_shift;
-                component |= component >> (8-mod_color_shift);
+                component |= component >> (8 - mod_color_shift);
                 // RgbValue(prev_color.0, prev_color.1, component)
-                color.2 = component as u8;    
+                color.2 = component as u8;
             }
             3 => {
                 // Modify GREEN in previous
                 let mut component = low_bits << mod_color_shift;
-                component |= component >> (8-mod_color_shift);
+                component |= component >> (8 - mod_color_shift);
                 // RgbValue(prev_color.0, component, prev_color.2)
-                color.1 = component as u8;   
+                color.1 = component as u8;
             }
-            _ => unreachable!("Logically, we cannot get here, as we only have two bits")
+            _ => unreachable!("Logically, we cannot get here, as we only have two bits"),
         }
 
         pixels.push(color.0);
@@ -475,7 +506,11 @@ fn push_row_bytes_ham(row: Vec<u8>, planes: usize, color_map: &ColorMap, pixels:
 /// HalfBrite is relatively simple, we need only half the colors in the color map,
 /// as one bit (from the last plane) tells us to simply half (darken) what the rest
 /// of the index tells us
-fn push_row_bytes_halfbrite(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec<u8>) -> Result<()> {
+fn push_row_bytes_halfbrite(
+    row: Vec<u8>,
+    color_map: &ColorMap,
+    pixels: &mut Vec<u8>,
+) -> Result<()> {
     // Resolve through color map, and add to output vector, but use only half the map
     // darkening pixels in the upper half
 
@@ -488,8 +523,8 @@ fn push_row_bytes_halfbrite(row: Vec<u8>, color_map: &ColorMap, pixels: &mut Vec
 
         let map_size = color_map.colors.len();
 
-        if index >= map_size  {
-            return Err(IlbmError::NoMapEntry{index, map_size})
+        if index >= map_size {
+            return Err(IlbmError::NoMapEntry { index, map_size });
         }
 
         let rgb = color_map.colors[index];
@@ -531,9 +566,9 @@ fn read_bitmap_header(chunk: IffChunk, image: &mut IlbmImage) -> Result<()> {
 
     // Lets do some early validations of crazy
     if image.size.0 == 0 || image.size.1 == 0 {
-        return Err(IlbmError::InvalidHeader{ 
+        return Err(IlbmError::InvalidHeader {
             expected: "non-zero height and width".to_string(),
-            actual: format!("{}", image.size)
+            actual: format!("{}", image.size),
         });
     }
 

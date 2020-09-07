@@ -4,22 +4,21 @@ extern crate log;
 use anyhow::Result;
 use std::env;
 
+use show_image::{make_window, ImageInfo, KeyCode, Window};
 use std::fs::{self};
-use show_image::{ImageInfo, make_window, KeyCode, Window};
 use std::time::Duration;
 
 use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
-    env_logger::builder()
-        .init();
+    env_logger::builder().init();
 
     info!("starting up");
 
     // Get a list of files, parameters are either files, or folders
     let files = args_to_file_list()?;
 
-    if files.len() == 0 {
+    if files.is_empty() {
         anyhow::bail!("I need some files or folders!");
     }
 
@@ -39,8 +38,8 @@ fn main() -> Result<()> {
             } else if event.key == KeyCode::Enter {
                 match file_iter.next() {
                     Some(p) => load_and_show_image(p, &window)?,
-                    None => break
-                }          
+                    None => break,
+                }
             }
         }
     }
@@ -49,7 +48,7 @@ fn main() -> Result<()> {
     show_image::stop().unwrap();
 
     info!("DONE");
-    
+
     Ok(())
 }
 
@@ -57,25 +56,32 @@ fn main() -> Result<()> {
 fn load_and_show_image(path: &PathBuf, window: &Window) -> Result<()> {
     let name = path.to_string_lossy();
     println!("Loading {}", name);
-    let image_result 
-        = ilbm::read_from_file( &path, ilbm::ReadOptions{ read_pixels: true, page_scale: true});
+    let image_result = ilbm::read_from_file(
+        &path,
+        ilbm::ReadOptions {
+            read_pixels: true,
+            page_scale: true,
+        },
+    );
 
     match image_result {
         Ok(image) => {
             println!("{}", image);
 
             // Change to a form that show_image understands
-            let pixels_and_info = (image.pixels, ImageInfo::rgb8(image.size.width(), image.size.height()));
-        
+            let pixels_and_info = (
+                image.pixels,
+                ImageInfo::rgb8(image.size.width(), image.size.height()),
+            );
+
             // stuff it in the window
             window.set_image(pixels_and_info, name).unwrap();
-        },
+        }
         Err(e) => {
             println!("Failed to load {}: {}", name, e);
             window.set_image(background_image(10, 10), name).unwrap();
         }
     }
-
 
     Ok(())
 }
@@ -104,7 +110,10 @@ fn get_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
             }
         }
     } else {
-        debug!("{} is not a file or folder, skipping!", path.to_string_lossy());
+        debug!(
+            "{} is not a file or folder, skipping!",
+            path.to_string_lossy()
+        );
     }
     Ok(())
 }
@@ -117,9 +126,10 @@ fn background_image(width: usize, height: usize) -> (Vec<u8>, ImageInfo) {
     for y in (0..height).step_by(4) {
         for x in (0..width).step_by(4) {
             let index = (y * width + x) * 3;
-            pixels[index] = 0; 
-            pixels[index+1] = 0;
-            pixels[index+2] = 0;         }
+            pixels[index] = 0;
+            pixels[index + 1] = 0;
+            pixels[index + 2] = 0;
+        }
     }
     (pixels, ImageInfo::rgb8(width, height))
 }

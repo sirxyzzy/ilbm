@@ -41,7 +41,7 @@ fn main() -> Result<()> {
     // Get a list of files, parameters are either files, or folders
     let files = all_files(&opts.files)?;
 
-    if files.len() == 0 {
+    if files.is_empty() {
         anyhow::bail!("I need some files or folders!");
     }
 
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
 }
 
 /// Take list or args, treat as files or folders and gather all
-fn all_files(paths: &Vec<String>) -> Result<Vec<PathBuf>> {
+fn all_files(paths: &[String]) -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = Vec::new();
     for arg in paths {
         get_files(&Path::new(&arg), &mut files)?;
@@ -114,5 +114,5 @@ fn add_file(path: PathBuf, files: &mut Vec<PathBuf>) {
         return;
     }
 
-    files.push(path.to_path_buf());
+    files.push(path);
 }
