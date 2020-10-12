@@ -33,8 +33,7 @@ fn main() -> Result<()> {
         builder.filter(None, LevelFilter::Debug);
     }
 
-    builder
-        .init();
+    builder.init();
 
     info!("starting up");
 
@@ -79,7 +78,7 @@ fn main() -> Result<()> {
 fn all_files(paths: &[String]) -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = Vec::new();
     for arg in paths {
-        get_files(&Path::new(&arg), &mut files)?;
+        get_files(&Path::new(arg), &mut files)?;
     }
     Ok(files)
 }
